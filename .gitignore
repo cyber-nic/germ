@@ -1,0 +1,20 @@
+# generally, ignore hidden artifacts
+.*
+
+# git
+.git/
+!.gitignore
+
+# python
+.venv/
+venv/
+
+# javascript/typescript
+node_modules/
+dist/
+
+# misc
+*.log
+
+
+grep-ast
