@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,9 @@ import (
 	"github.com/fatih/color"
 	"github.com/rs/zerolog/log"
 	sitter "github.com/tree-sitter/go-tree-sitter"
+	"gonum.org/v1/gonum/graph"
+	"gonum.org/v1/gonum/graph/network"
+	"gonum.org/v1/gonum/graph/simple"
 )
 
 // ------------------------------------------------------------------------------------
@@ -375,7 +379,7 @@ func (r *RepoMap) GetTagsRaw(fname, relFname string) ([]Tag, error) {
 // ------------------------------------------------------------------------------------
 
 // getRankedTags is a simpler stand-in for the Python code that used networkx pagerank.
-func (r *RepoMap) getRankedTags(
+func (r *RepoMap) getRankedTagsSimple(
 	chatFnames, otherFnames []string,
 	mentionedFnames, mentionedIdents map[string]bool,
 	progress func(),
@@ -456,6 +460,141 @@ func (r *RepoMap) getRankedTags(
 	return sortable
 }
 
+// getRankedTags uses gonum.org/v1/gonum/graph/network PageRank
+func (r *RepoMap) getRankedTagsByPageRank(
+	chatFnames, otherFnames []string,
+	mentionedFnames, mentionedIdents map[string]bool,
+	progress func(),
+) []Tag {
+	log.Trace().Msg(color.YellowString("GetRankedTagsMap (PageRank)"))
+
+	// Gather the set of all filenames
+	fnames := make(map[string]bool)
+	for _, cf := range chatFnames {
+		fnames[cf] = true
+	}
+	for _, of := range otherFnames {
+		fnames[of] = true
+	}
+
+	var allFnames []string
+	for fname := range fnames {
+		allFnames = append(allFnames, fname)
+	}
+
+	// Collect all tags from those files
+	var allTags []Tag
+	for _, fname := range allFnames {
+		if progress != nil {
+			progress()
+		}
+		fi, err := os.Stat(fname)
+		if err != nil || fi.IsDir() {
+			if !r.WarnedFiles[fname] {
+				log.Warn().Err(err).Msgf("Repo-map can't include %s", fname)
+				fmt.Println("Has it been deleted from the file system but not from git?")
+				r.WarnedFiles[fname] = true
+			}
+			continue
+		}
+
+		rel := r.GetRelFname(fname)
+		tg, err := r.GetTags(fname, rel)
+		if err != nil {
+			if err == errUnsupportedFileType {
+				log.Trace().Msgf("skip %s", fname)
+			} else {
+				log.Warn().Err(err).Msgf("Failed to get tags for %s", fname)
+			}
+			continue
+		}
+		if tg != nil {
+			allTags = append(allTags, tg...)
+		}
+	}
+
+	log.Trace().Msg(color.YellowString("> Building graph for PageRank"))
+
+	// Build a directed graph where each Tag is a node
+	dg := simple.NewDirectedGraph()
+
+	// nodeFor[i] will be the gonum Node for allTags[i]
+	nodeFor := make([]graph.Node, len(allTags))
+
+	// We'll also keep an index->ID map so we can retrieve IDs if needed
+	for i := range allTags {
+		n := dg.NewNode()
+		dg.AddNode(n)
+		nodeFor[i] = n
+	}
+
+	// Group tags by identical Name
+	byName := make(map[string][]int)
+	for i, t := range allTags {
+		byName[t.Name] = append(byName[t.Name], i)
+	}
+
+	// For each name, link references → definitions with directed edges
+	for _, indices := range byName {
+		var refIndices, defIndices []int
+		for _, idx := range indices {
+			if allTags[idx].Kind == TagKindDef {
+				defIndices = append(defIndices, idx)
+			} else if allTags[idx].Kind == TagKindRef {
+				refIndices = append(refIndices, idx)
+			}
+		}
+		if len(refIndices) == 0 || len(defIndices) == 0 {
+			continue
+		}
+		// Create edges from each ref to each def
+		for _, rIdx := range refIndices {
+			for _, dIdx := range defIndices {
+				dg.SetEdge(dg.NewEdge(nodeFor[rIdx], nodeFor[dIdx]))
+			}
+		}
+	}
+
+	// Run PageRank (unweighted) on the constructed graph
+	damp := 0.85
+	tol := 0.000001
+	pr := network.PageRank(dg, damp, tol)
+
+	// Convert the page-rank mapping from node ID -> rank into “index -> rank”
+	// since each node corresponds to allTags[i].
+	scores := make([]float64, len(allTags))
+	for i, node := range nodeFor {
+		scores[i] = pr[node.ID()]
+	}
+
+	// Sort allTags by PageRank descending, then by name, then by line
+	// (Just an example; tailor tie-breaks as needed.)
+	sortable := make([]int, len(allTags))
+	for i := range sortable {
+		sortable[i] = i
+	}
+	sort.Slice(sortable, func(a, b int) bool {
+		iA, iB := sortable[a], sortable[b]
+		sA, sB := scores[iA], scores[iB]
+		if sA != sB {
+			return sA > sB // higher rank first
+		}
+		nameA, nameB := allTags[iA].Name, allTags[iB].Name
+		if nameA != nameB {
+			return nameA < nameB
+		}
+		return allTags[iA].Line < allTags[iB].Line
+	})
+
+	// Rebuild sorted Tag slice
+	ranked := make([]Tag, len(allTags))
+	for i, idx := range sortable {
+		ranked[i] = allTags[idx]
+	}
+
+	return ranked
+}
+
 // GetRankedTagsMap orchestrates calls to getRankedTags and toTree to produce the final “map” string.
 func (r *RepoMap) GetRankedTagsMap(
 	chatFnames, otherFnames []string,
@@ -476,7 +615,7 @@ func (r *RepoMap) GetRankedTagsMap(
 
 	startTime := time.Now()
 
-	rankedTags := r.getRankedTags(chatFnames, otherFnames, mentionedFnames, mentionedIdents, nil)
+	rankedTags := r.getRankedTagsSimple(chatFnames, otherFnames, mentionedFnames, mentionedIdents, nil)
 	// tr@ck
 	for i, t := range rankedTags {
 		if t.Name == "doc" {

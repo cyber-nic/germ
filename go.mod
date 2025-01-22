@@ -7,6 +7,7 @@ require (
 	github.com/fatih/color v1.18.0
 	github.com/rs/zerolog v1.33.0
 	github.com/tree-sitter/go-tree-sitter v0.24.0
+	gonum.org/v1/gonum v0.15.1
 )
 
 replace github.com/cyber-nic/grep-ast => /code/cyber-nic/grep-ast
@@ -19,5 +20,6 @@ require (
 	github.com/tree-sitter/tree-sitter-javascript v0.23.1 // indirect
 	github.com/tree-sitter/tree-sitter-python v0.23.5 // indirect
 	github.com/tree-sitter/tree-sitter-typescript v0.23.2 // indirect
+	golang.org/x/exp v0.0.0-20231110203233-9a3e6036ecaa // indirect
 	golang.org/x/sys v0.25.0 // indirect
 )
