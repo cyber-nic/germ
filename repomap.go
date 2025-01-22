@@ -386,21 +386,11 @@ func (r *RepoMap) getRankedTagsSimple(
 ) []Tag {
 	log.Trace().Msg(color.YellowString("GetRankedTagsMap"))
 
-	fnames := make(map[string]bool)
-	for _, cf := range chatFnames {
-		fnames[cf] = true
-	}
-	for _, of := range otherFnames {
-		fnames[of] = true
-	}
-
-	var allFnames []string
-	for f := range fnames {
-		allFnames = append(allFnames, f)
-	}
+	// Combine chatFnames and otherFnames into a single slice of unique elements
+	allFnames := uniqueElements(chatFnames, otherFnames)
 
 	var allTags []Tag
-	for _, fname := range allFnames {
+	for fname, _ := range allFnames {
 		if progress != nil {
 			progress()
 		}
@@ -468,23 +458,12 @@ func (r *RepoMap) getRankedTagsByPageRank(
 ) []Tag {
 	log.Trace().Msg(color.YellowString("GetRankedTagsMap (PageRank)"))
 
-	// Gather the set of all filenames
-	fnames := make(map[string]bool)
-	for _, cf := range chatFnames {
-		fnames[cf] = true
-	}
-	for _, of := range otherFnames {
-		fnames[of] = true
-	}
-
-	var allFnames []string
-	for fname := range fnames {
-		allFnames = append(allFnames, fname)
-	}
+	// Combine chatFnames and otherFnames into a map of unique elements
+	allFnames := uniqueElements(chatFnames, otherFnames)
 
 	// Collect all tags from those files
 	var allTags []Tag
-	for _, fname := range allFnames {
+	for fname, _ := range allFnames {
 		if progress != nil {
 			progress()
 		}
