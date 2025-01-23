@@ -378,91 +378,14 @@ func (r *RepoMap) GetTagsRaw(fname, relFname string) ([]Tag, error) {
 // Ranked Tags + RepoMap generation
 // ------------------------------------------------------------------------------------
 
-// getRankedTags is a simpler stand-in for the Python code that used networkx pagerank.
-func (r *RepoMap) getRankedTagsSimple(
-	chatFnames, otherFnames []string,
-	mentionedFnames, mentionedIdents map[string]bool,
+// getTagsFromFiles Collect all tags from those files
+func (r *RepoMap) getTagsFromFiles(
+	allFnames map[string]struct{},
 	progress func(),
 ) []Tag {
-	log.Trace().Msg(color.YellowString("GetRankedTagsMap"))
-
-	// Combine chatFnames and otherFnames into a single slice of unique elements
-	allFnames := uniqueElements(chatFnames, otherFnames)
 
 	var allTags []Tag
-	for fname, _ := range allFnames {
-		if progress != nil {
-			progress()
-		}
 
-		fi, err := os.Stat(fname)
-		if err != nil || fi.IsDir() {
-			if !r.WarnedFiles[fname] {
-				log.Warn().Err(err).Msgf("Repo-map can't include %s", fname)
-				fmt.Printf("Has it been deleted from the file system but not from git?")
-				r.WarnedFiles[fname] = true
-			}
-			continue
-		}
-
-		rel := r.GetRelFname(fname)
-		tg, err := r.GetTags(fname, rel)
-		if err != nil {
-			if err == errUnsupportedFileType {
-				log.Trace().Msgf("skip %s", fname)
-			} else {
-				log.Warn().Err(err).Msgf("Failed to get tags for %s", fname)
-			}
-			continue
-		}
-		if tg != nil {
-			allTags = append(allTags, tg...)
-		}
-	}
-
-	log.Trace().Msg(color.YellowString("> GetRankedTagsMap"))
-
-	// tr@ck
-	// Instead of a true pagerank, we do a naive sorting by # of defs per file.
-	defScore := make(map[string]int)
-	for _, t := range allTags {
-		if t.Kind == TagKindDef {
-			defScore[t.Name]++
-		}
-	}
-
-	// Sort allTags by defScore descending, then by filename, line ascending.
-	sortable := make([]Tag, len(allTags))
-	copy(sortable, allTags)
-
-	simpleSort(sortable, func(a, b Tag) bool {
-		as := defScore[a.Name]
-		bs := defScore[b.Name]
-		if as != bs {
-			return as > bs
-		}
-		if a.Name != b.Name {
-			return a.Name < b.Name
-		}
-		return a.Line < b.Line
-	})
-
-	return sortable
-}
-
-// getRankedTags uses gonum.org/v1/gonum/graph/network PageRank
-func (r *RepoMap) getRankedTagsByPageRank(
-	chatFnames, otherFnames []string,
-	mentionedFnames, mentionedIdents map[string]bool,
-	progress func(),
-) []Tag {
-	log.Trace().Msg(color.YellowString("GetRankedTagsMap (PageRank)"))
-
-	// Combine chatFnames and otherFnames into a map of unique elements
-	allFnames := uniqueElements(chatFnames, otherFnames)
-
-	// Collect all tags from those files
-	var allTags []Tag
 	for fname, _ := range allFnames {
 		if progress != nil {
 			progress()
@@ -491,8 +414,54 @@ func (r *RepoMap) getRankedTagsByPageRank(
 			allTags = append(allTags, tg...)
 		}
 	}
+	return allTags
+}
 
-	log.Trace().Msg(color.YellowString("> Building graph for PageRank"))
+// getRankedTagsSimple is a simple ranking algorithm based on the number of defs per file.
+func (r *RepoMap) getRankedTagsSimple(
+	allTags []Tag,
+	mentionedFnames, mentionedIdents map[string]bool,
+	progress func(),
+) []Tag {
+	log.Trace().Msg(color.YellowString("getRankedTagsSimple"))
+
+	// tr@ck
+	// Instead of a true pagerank, we do a naive sorting by # of defs per file.
+	defScore := make(map[string]int)
+	for _, t := range allTags {
+		if t.Kind == TagKindDef {
+			defScore[t.Name]++
+		}
+	}
+
+	PrintStructOut(defScore)
+
+	// Sort allTags by defScore descending, then by filename, line ascending.
+	sortable := make([]Tag, len(allTags))
+	copy(sortable, allTags)
+
+	simpleSort(sortable, func(a, b Tag) bool {
+		as := defScore[a.Name]
+		bs := defScore[b.Name]
+		if as != bs {
+			return as > bs
+		}
+		if a.Name != b.Name {
+			return a.Name < b.Name
+		}
+		return a.Line < b.Line
+	})
+
+	return sortable
+}
+
+// getRankedTagsByPageRank is a more sophisticated ranking algorithm based on PageRank.
+func (r *RepoMap) getRankedTagsByPageRank(
+	allTags []Tag,
+	mentionedFnames, mentionedIdents map[string]bool,
+	progress func(),
+) []Tag {
+	log.Trace().Msg(color.YellowString("getRankedTagsByPageRank (PageRank)"))
 
 	// Build a directed graph where each Tag is a node
 	dg := simple.NewDirectedGraph()
@@ -529,13 +498,19 @@ func (r *RepoMap) getRankedTagsByPageRank(
 		// Create edges from each ref to each def
 		for _, rIdx := range refIndices {
 			for _, dIdx := range defIndices {
+				// Currently, edges are added without specifying weights (NewEdge instead of NewWeightedEdge).
+				// This treats all edges equally. That might be correct for your domain, but if some edges (references) are more “important” than others,
+				// a weighted approach could yield different results.
 				dg.SetEdge(dg.NewEdge(nodeFor[rIdx], nodeFor[dIdx]))
 			}
 		}
 	}
 
 	// Run PageRank (unweighted) on the constructed graph
+
+	// 0.85 is famously the default used in the original PageRank paper. It’s a very common choice and generally a safe, “industry-standard” default
 	damp := 0.85
+	// 0.000001 is also a typical. A tolerance of 1e-6 strikes a reasonable balance between accuracy and performance for most moderately sized graphs
 	tol := 0.000001
 	pr := network.PageRank(dg, damp, tol)
 
@@ -547,11 +522,11 @@ func (r *RepoMap) getRankedTagsByPageRank(
 	}
 
 	// Sort allTags by PageRank descending, then by name, then by line
-	// (Just an example; tailor tie-breaks as needed.)
 	sortable := make([]int, len(allTags))
 	for i := range sortable {
 		sortable[i] = i
 	}
+
 	sort.Slice(sortable, func(a, b int) bool {
 		iA, iB := sortable[a], sortable[b]
 		sA, sB := scores[iA], scores[iB]
@@ -594,7 +569,15 @@ func (r *RepoMap) GetRankedTagsMap(
 
 	startTime := time.Now()
 
-	rankedTags := r.getRankedTagsSimple(chatFnames, otherFnames, mentionedFnames, mentionedIdents, nil)
+	// Combine chatFnames and otherFnames into a map of unique elements
+	allFnames := uniqueElements(chatFnames, otherFnames)
+
+	// Collect all tags from those files
+	allTags := r.getTagsFromFiles(allFnames, nil)
+
+	rankedTags := r.getRankedTagsSimple(allTags, mentionedFnames, mentionedIdents, nil)
+
+	// rankedTags := r.getRankedTagsByPageRank(allTags, mentionedFnames, mentionedIdents, nil)
 	// tr@ck
 	for i, t := range rankedTags {
 		if t.Name == "doc" {
@@ -833,45 +816,6 @@ func (r *RepoMap) renderTree(absFname, relFname string, linesOfInterest []int) s
 
 	r.TreeCache[cacheKey] = res
 	return res
-}
-
-// ------------------------------------------------------------------------------------
-// Misc. Utilities
-// ------------------------------------------------------------------------------------
-
-// filterImportantFiles is a stub to mimic Python's `filter_important_files`.
-func filterImportantFiles(files []string) []string {
-	return files
-}
-
-// Simple in-place sort for Tag slices by a custom comparator (used in getRankedTags).
-func simpleSort(tags []Tag, lessFn func(a, b Tag) bool) {
-	if len(tags) < 2 {
-		return
-	}
-	quickSort(tags, 0, len(tags)-1, lessFn)
-}
-
-func quickSort(tags []Tag, left, right int, lessFn func(a, b Tag) bool) {
-	if left >= right {
-		return
-	}
-	pivot := partition(tags, left, right, lessFn)
-	quickSort(tags, left, pivot-1, lessFn)
-	quickSort(tags, pivot+1, right, lessFn)
-}
-
-func partition(tags []Tag, left, right int, lessFn func(a, b Tag) bool) int {
-	pivot := tags[right]
-	i := left
-	for j := left; j < right; j++ {
-		if lessFn(tags[j], pivot) {
-			tags[i], tags[j] = tags[j], tags[i]
-			i++
-		}
-	}
-	tags[i], tags[right] = tags[right], tags[i]
-	return i
 }
 
 // getRandomColor replicates the Python get_random_color using HSV → RGB.
