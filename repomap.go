@@ -18,8 +18,8 @@ import (
 	"github.com/rs/zerolog/log"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	"gonum.org/v1/gonum/graph"
+	"gonum.org/v1/gonum/graph/multi"
 	"gonum.org/v1/gonum/graph/network"
-	"gonum.org/v1/gonum/graph/simple"
 )
 
 // ------------------------------------------------------------------------------------
@@ -70,6 +70,7 @@ type RepoMap struct {
 	MapProcessingTime float64
 	LastMap           string
 	TagsCache         CacheStub
+	querySourceCache  map[string]string
 }
 
 // ModelStub simulates the main_model used in Python code (for token_count, etc.).
@@ -147,6 +148,7 @@ func NewRepoMap(
 		TreeContextCache: make(map[string]TreeContextCacheItem),
 		MapCache:         make(map[string]string),
 		TagsCache:        *NewCacheStub(),
+		querySourceCache: make(map[string]string),
 	}
 
 	if verbose {
@@ -181,6 +183,7 @@ func (r *RepoMap) GetRelFname(fname string) string {
 	if err != nil {
 		return fname
 	}
+
 	return rel
 }
 
@@ -249,18 +252,31 @@ func (r *RepoMap) GetTags(fname, relFname string) ([]Tag, error) {
 	return data, nil
 }
 
-func getSourceCodeMapQuery(lang string) ([]byte, error) {
+// getSourceCodeMapQuery reads the query file for the given language.
+func (r *RepoMap) getSourceCodeMapQuery(lang string) (string, error) {
 	tpl := "queries/tree-sitter-%s-tags.scm"
 
-	switch lang {
-	case "go", "python", "javascript", "typescript", "ruby", "java", "c", "cpp":
-		queryFilename := fmt.Sprintf(tpl, lang)
-		// log.Trace().Str("lang", lang).Str("file", queryFilename).Msg("getSourceCodeMapQuery")
-
-		return os.ReadFile(queryFilename)
-	default:
-		return []byte{}, fmt.Errorf("unsupported language: %s", lang)
+	if _, ok := r.querySourceCache[lang]; ok {
+		return r.querySourceCache[lang], nil
 	}
+
+	queryFilename := fmt.Sprintf(tpl, lang)
+
+	// check if file exists
+	if _, err := os.Stat(queryFilename); err != nil {
+		return "", fmt.Errorf("query file not found: %s", queryFilename)
+	}
+
+	// read file
+	querySource, err := os.ReadFile(queryFilename)
+	if err != nil {
+		return "", fmt.Errorf("failed to read query file (%s): %v", queryFilename, err)
+	}
+
+	// cache the query source
+	r.querySourceCache[lang] = string(querySource)
+
+	return r.querySourceCache[lang], nil
 }
 
 var errUnsupportedFileType = errors.New("unsupported file type")
@@ -295,7 +311,7 @@ func (r *RepoMap) GetTagsRaw(fname, relFname string) ([]Tag, error) {
 	log.Debug().Str("lang", l).Str("file", fname).Msg("sitter")
 
 	// 5) Load your query
-	querySource, err := getSourceCodeMapQuery(l)
+	querySource, err := r.getSourceCodeMapQuery(l)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read query file (%s): %v", l, err)
 	}
@@ -303,7 +319,7 @@ func (r *RepoMap) GetTagsRaw(fname, relFname string) ([]Tag, error) {
 		return nil, fmt.Errorf("empty query file: %s", l)
 	}
 
-	q, qErr := sitter.NewQuery(lang, string(querySource))
+	q, qErr := sitter.NewQuery(lang, querySource)
 	if qErr != nil {
 		var queryErr *sitter.QueryError
 		if errors.As(qErr, &queryErr) {
@@ -400,7 +416,10 @@ func (r *RepoMap) getTagsFromFiles(
 			continue
 		}
 
+		// Get the relative file name
 		rel := r.GetRelFname(fname)
+
+		// Get the tags for this file
 		tg, err := r.GetTags(fname, rel)
 		if err != nil {
 			if err == errUnsupportedFileType {
@@ -455,98 +474,231 @@ func (r *RepoMap) getRankedTagsSimple(
 	return sortable
 }
 
-// getRankedTagsByPageRank is a more sophisticated ranking algorithm based on PageRank.
+type tagKey struct {
+	fname  string // the file name (relative)
+	symbol string // the actual identifier
+}
+
 func (r *RepoMap) getRankedTagsByPageRank(
 	allTags []Tag,
 	mentionedFnames, mentionedIdents map[string]bool,
 	progress func(),
 ) []Tag {
-	log.Trace().Msg(color.YellowString("getRankedTagsByPageRank (PageRank)"))
+	log.Trace().Msg(color.YellowString("GetRankedTagsMap (PageRank)"))
 
-	// Build a directed graph where each Tag is a node
-	dg := simple.NewDirectedGraph()
+	// 1) Collect references, definitions
+	defines := make(map[string]map[string]struct{}) // symbol -> set of filenames that define it
+	references := make(map[string]map[string]int)   // symbol -> map of (referencerFile -> countOfRefs)
+	definitions := make(map[tagKey][]Tag)           // (fname, symbol) -> slice of definition Tags
 
-	// nodeFor[i] will be the gonum Node for allTags[i]
-	nodeFor := make([]graph.Node, len(allTags))
+	for _, t := range allTags {
+		rel := r.GetRelFname(t.Path)
+		symbol := t.Text
 
-	// We'll also keep an index->ID map so we can retrieve IDs if needed
-	for i := range allTags {
-		n := dg.NewNode()
-		dg.AddNode(n)
-		nodeFor[i] = n
+		switch t.Kind {
+		case TagKindDef:
+			if defines[symbol] == nil {
+				defines[symbol] = make(map[string]struct{})
+			}
+			defines[symbol][rel] = struct{}{}
+
+			k := tagKey{fname: rel, symbol: symbol}
+			definitions[k] = append(definitions[k], t)
+
+		case TagKindRef:
+			if references[symbol] == nil {
+				references[symbol] = make(map[string]int)
+			}
+			references[symbol][rel]++
+		}
 	}
 
-	// Group tags by identical Name
-	byName := make(map[string][]int)
-	for i, t := range allTags {
-		byName[t.Name] = append(byName[t.Name], i)
-	}
-
-	// For each name, link references → definitions with directed edges
-	for _, indices := range byName {
-		var refIndices, defIndices []int
-		for _, idx := range indices {
-			if allTags[idx].Kind == TagKindDef {
-				defIndices = append(defIndices, idx)
-			} else if allTags[idx].Kind == TagKindRef {
-				refIndices = append(refIndices, idx)
+	// If references is empty, fall back to references=defines
+	if len(references) == 0 {
+		references = make(map[string]map[string]int)
+		for sym, defFiles := range defines {
+			references[sym] = make(map[string]int)
+			for df := range defFiles {
+				references[sym][df]++
 			}
 		}
-		if len(refIndices) == 0 || len(defIndices) == 0 {
+	}
+
+	// 2) Build a multi directed graph
+	g := multi.NewWeightedDirectedGraph()
+
+	// Keep track of the node ID for each rel_fname
+	nodeByFile := make(map[string]graph.Node)
+
+	// Gather all relevant filenames
+	fileSet := make(map[string]struct{})
+	for _, defFiles := range defines {
+		for f := range defFiles {
+			fileSet[f] = struct{}{}
+		}
+	}
+	for _, refMap := range references {
+		for f := range refMap {
+			fileSet[f] = struct{}{}
+		}
+	}
+
+	// Create node for each file
+	for f := range fileSet {
+		n := g.NewNode()
+		g.AddNode(n)
+		nodeByFile[f] = n
+	}
+
+	fmt.Printf("Number of nodes (files): %d\n", g.Nodes().Len())
+
+	// 3) For each ident, link referencing file -> defining file with weight
+	for symbol, refMap := range references {
+		log.Debug().Msg(symbol)
+		defFiles := defines[symbol]
+		if len(defFiles) == 0 {
 			continue
 		}
-		// Create edges from each ref to each def
-		for _, rIdx := range refIndices {
-			for _, dIdx := range defIndices {
-				// Currently, edges are added without specifying weights (NewEdge instead of NewWeightedEdge).
-				// This treats all edges equally. That might be correct for your domain, but if some edges (references) are more “important” than others,
-				// a weighted approach could yield different results.
-				dg.SetEdge(dg.NewEdge(nodeFor[rIdx], nodeFor[dIdx]))
+
+		var mul float64
+		switch {
+		case mentionedIdents[symbol]:
+			mul = 10.0
+		case strings.HasPrefix(symbol, "_"):
+			mul = 0.1
+		default:
+			mul = 1.0
+		}
+
+		for refFile, numRefs := range refMap {
+			// log.Trace().Msg(color.YellowString("refFile: %s, numRefs: %d"), refFile, numRefs))
+			w := mul * math.Sqrt(float64(numRefs))
+			for defFile := range defFiles {
+				// If refFile == defFile, decide if you skip or not
+				if refFile == defFile {
+					continue
+				}
+				refNode := nodeByFile[refFile]
+				defNode := nodeByFile[defFile]
+
+				// Create a weighted edge
+				edge := g.NewWeightedLine(refNode, defNode, w)
+				g.SetWeightedLine(edge)
 			}
 		}
 	}
 
-	// Run PageRank (unweighted) on the constructed graph
+	// 4) Personalization
+	personal := make(map[int64]float64)
+	totalFiles := float64(len(fileSet))
+	defaultPersonal := 1.0 / totalFiles
 
-	// 0.85 is famously the default used in the original PageRank paper. It’s a very common choice and generally a safe, “industry-standard” default
-	damp := 0.85
-	// 0.000001 is also a typical. A tolerance of 1e-6 strikes a reasonable balance between accuracy and performance for most moderately sized graphs
-	tol := 0.000001
-	pr := network.PageRank(dg, damp, tol)
-
-	// Convert the page-rank mapping from node ID -> rank into “index -> rank”
-	// since each node corresponds to allTags[i].
-	scores := make([]float64, len(allTags))
-	for i, node := range nodeFor {
-		scores[i] = pr[node.ID()]
+	chatSet := make(map[string]struct{})
+	for cf := range mentionedFnames {
+		chatSet[cf] = struct{}{}
 	}
 
-	// Sort allTags by PageRank descending, then by name, then by line
-	sortable := make([]int, len(allTags))
-	for i := range sortable {
-		sortable[i] = i
+	for f, node := range nodeByFile {
+		if _, inChat := chatSet[f]; inChat {
+			personal[node.ID()] = 100.0 / totalFiles
+		} else {
+			personal[node.ID()] = defaultPersonal
+		}
 	}
 
-	sort.Slice(sortable, func(a, b int) bool {
-		iA, iB := sortable[a], sortable[b]
-		sA, sB := scores[iA], scores[iB]
-		if sA != sB {
-			return sA > sB // higher rank first
+	// 5) Run PageRank (NOTE: gonum.network.PageRank might not natively handle personalization
+	// the same way. If you need full personalized PageRank, you might have to modify or implement
+	// your own. For now, we do unpersonalized for demonstration.)
+	pr := network.PageRank(g, 0.85, 1e-6) // no direct personalization used
+
+	PrintStructOut(pr)
+
+	// 6) Distribute rank from each src node across its out edges
+	edgeRanks := make(map[struct {
+		dst    string
+		symbol string
+	}]float64)
+
+	for symbol, refMap := range references {
+		defFiles := defines[symbol]
+		if defFiles == nil {
+			continue
 		}
-		nameA, nameB := allTags[iA].Name, allTags[iB].Name
-		if nameA != nameB {
-			return nameA < nameB
+
+		var mul float64
+		switch {
+		case mentionedIdents[symbol]:
+			mul = 10.0
+		case strings.HasPrefix(symbol, "_"):
+			mul = 0.1
+		default:
+			mul = 1.0
 		}
-		return allTags[iA].Line < allTags[iB].Line
+
+		for refFile, numRefs := range refMap {
+			w := mul * math.Sqrt(float64(numRefs))
+			sumW := float64(len(defFiles)) * w // If each defFile gets w from refFile
+
+			srcRank := pr[nodeByFile[refFile].ID()]
+			if sumW == 0 {
+				continue
+			}
+			for defFile := range defFiles {
+				portion := srcRank * (w / sumW)
+				edgeRanks[struct {
+					dst    string
+					symbol string
+				}{dst: defFile, symbol: symbol}] += portion
+			}
+		}
+	}
+
+	// 7) Convert to sorted list
+	type defRank struct {
+		fname  string
+		symbol string
+		rank   float64
+	}
+	var defRankSlice []defRank
+	for k, v := range edgeRanks {
+		defRankSlice = append(defRankSlice, defRank{
+			fname:  k.dst,
+			symbol: k.symbol,
+			rank:   v,
+		})
+	}
+
+	sort.Slice(defRankSlice, func(i, j int) bool {
+		if defRankSlice[i].rank != defRankSlice[j].rank {
+			return defRankSlice[i].rank > defRankSlice[j].rank
+		}
+		if defRankSlice[i].fname != defRankSlice[j].fname {
+			return defRankSlice[i].fname < defRankSlice[j].fname
+		}
+		return defRankSlice[i].symbol < defRankSlice[j].symbol
 	})
 
-	// Rebuild sorted Tag slice
-	ranked := make([]Tag, len(allTags))
-	for i, idx := range sortable {
-		ranked[i] = allTags[idx]
+	chatRelFnames := make(map[string]bool)
+	// If you had a slice of chatFnames, for example:
+	/*
+		for _, cf := range chatFnamesSlice {
+			rel := r.GetRelFname(cf)
+			chatRelFnames[rel] = true
+		}
+	*/
+
+	var rankedTags []Tag
+	for _, dr := range defRankSlice {
+		if chatRelFnames[dr.fname] {
+			continue
+		}
+		k := tagKey{fname: dr.fname, symbol: dr.symbol}
+		defs := definitions[k]
+		rankedTags = append(rankedTags, defs...)
 	}
 
-	return ranked
+	// Possibly append files that have no tags, etc.
+	return rankedTags
 }
 
 // GetRankedTagsMap orchestrates calls to getRankedTags and toTree to produce the final “map” string.
@@ -556,8 +708,6 @@ func (r *RepoMap) GetRankedTagsMap(
 	mentionedFnames, mentionedIdents map[string]bool,
 	forceRefresh bool,
 ) string {
-	log.Trace().Msg(color.YellowString("GetRankedTagsMap"))
-
 	cacheKey := strings.Join(chatFnames, "|") + "||" + strings.Join(otherFnames, "|") +
 		fmt.Sprintf("||%d", maxMapTokens)
 
@@ -575,16 +725,22 @@ func (r *RepoMap) GetRankedTagsMap(
 	// Collect all tags from those files
 	allTags := r.getTagsFromFiles(allFnames, nil)
 
-	rankedTags := r.getRankedTagsSimple(allTags, mentionedFnames, mentionedIdents, nil)
+	for i, t := range allTags {
+		fmt.Println(i, t)
+	}
 
-	// rankedTags := r.getRankedTagsByPageRank(allTags, mentionedFnames, mentionedIdents, nil)
+	return ""
+
+	// rankedTags := r.getRankedTagsSimple(allTags, mentionedFnames, mentionedIdents, nil)
+	rankedTags := r.getRankedTagsByPageRank(allTags, mentionedFnames, mentionedIdents, nil)
+
 	// tr@ck
 	for i, t := range rankedTags {
 		if t.Name == "doc" {
 			continue
 		}
 		// first 10 chars of the text
-		log.Trace().Int("index", i).Str("path", t.Path).Int("line", t.Line).Str("text", fmt.Sprintf("%s ...", t.Text[:20])).Str("kind", t.Kind).Msg("ranked tags")
+		log.Debug().Int("index", i).Str("path", t.Path).Int("line", t.Line).Str("text", fmt.Sprintf("%s ...", t.Text[:20])).Str("kind", t.Kind).Msg("ranked tags")
 	}
 
 	special := filterImportantFiles(otherFnames)
@@ -678,13 +834,13 @@ func (r *RepoMap) GetRepoMap(
 	}
 
 	var filesListing string
-	defer func() {
-		if rec := recover(); rec != nil {
-			fmt.Printf("ERR: Disabling repo map, repository may be too large?")
-			r.MaxMapTokens = 0
-			filesListing = ""
-		}
-	}()
+	// defer func() {
+	// 	if rec := recover(); rec != nil {
+	// 		fmt.Printf("ERR: Disabling repo map, repository may be too large?")
+	// 		r.MaxMapTokens = 0
+	// 		filesListing = ""
+	// 	}
+	// }()
 
 	filesListing = r.GetRankedTagsMap(chatFiles, otherFiles, maxMapTokens, mentionedFnames, mentionedIdents, forceRefresh)
 	if filesListing == "" {

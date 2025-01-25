@@ -1,12 +1,14 @@
 package orb
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
+// TestNewRepoMap tests the NewRepoMap function.
 func TestNewRepoMap(t *testing.T) {
 	rm := NewRepoMap(
 		1024,
@@ -23,6 +25,7 @@ func TestNewRepoMap(t *testing.T) {
 	}
 }
 
+// TestGetRepoMap tests the GetRepoMap method of the RepoMap struct.
 func TestGetRepoMap(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "repomap-test-*")
 	if err != nil {
@@ -75,6 +78,7 @@ func OtherFunc() {
 	}
 }
 
+// TestGetRankedTagsMap tests the GetRankedTagsMap method of the RepoMap struct.
 func TestGetRankedTagsMap(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "repomap-test-*")
 	if err != nil {
@@ -127,6 +131,7 @@ func B() {
 	}
 }
 
+// TestRenderTree tests the renderTree method of the RepoMap struct.
 func TestRenderTree(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "repomap-test-*")
 	if err != nil {
@@ -171,5 +176,139 @@ func Demo() {
 	}
 	if !strings.Contains(rendered, "Some line of code") {
 		t.Errorf("Expected snippet to contain 'Some line of code', got:\n%s", rendered)
+	}
+}
+
+// TestGetRelFname tests the GetRelFname method of the RepoMap struct.
+func TestGetRelFname(t *testing.T) {
+	// Test cases
+	tests := []struct {
+		name     string
+		root     string
+		fname    string
+		expected string
+	}{
+		{
+			name:     "File within root",
+			root:     "/home/user/project",
+			fname:    "/home/user/project/file.txt",
+			expected: "file.txt",
+		},
+		{
+			name:     "Nested file within root",
+			root:     "/home/user/project",
+			fname:    "/home/user/project/folder/file.txt",
+			expected: "folder/file.txt",
+		},
+		{
+			name:     "File outside root",
+			root:     "/home/user/project",
+			fname:    "/home/user/other/file.txt",
+			expected: "../other/file.txt",
+		},
+		{
+			name:     "Same as root",
+			root:     "/home/user/project",
+			fname:    "/home/user/project",
+			expected: ".",
+		},
+		{
+			name:     "Empty root",
+			root:     "",
+			fname:    "/home/user/project/file.txt",
+			expected: "/home/user/project/file.txt",
+		},
+		{
+			name:     "Empty fname returns as-is",
+			root:     "/home/user/project",
+			fname:    ".",
+			expected: ".",
+		},
+	}
+
+	// Run test cases
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := RepoMap{Root: tt.root}
+			result := repo.GetRelFname(tt.fname)
+
+			if result != tt.expected {
+				t.Errorf("GetRelFname(%q) = %q; want %q", tt.fname, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestGetSourceCodeMapQuery tests the getSourceCodeMapQuery method of the RepoMap struct.
+func TestGetSourceCodeMapQuery(t *testing.T) {
+	// Initialize RepoMap
+	repo := RepoMap{
+		querySourceCache: make(map[string]string),
+	}
+
+	// Test cases
+	tests := []struct {
+		name          string
+		lang          string
+		expectedError bool
+		expectedData  string
+	}{
+		{
+			name:          "Valid language: Go",
+			lang:          "go",
+			expectedError: false,
+		},
+		{
+			name:          "Valid language: Python",
+			lang:          "python",
+			expectedError: false,
+		},
+		{
+			name:          "Valid language: JavaScript",
+			lang:          "javascript",
+			expectedError: false,
+		},
+		{
+			name:          "Unsupported language",
+			lang:          "haskell",
+			expectedError: true,
+		},
+		{
+			name:          "Cached query source",
+			lang:          "go",
+			expectedError: false,
+		},
+	}
+
+	// Run test cases
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+
+			data, err := repo.getSourceCodeMapQuery(tt.lang)
+
+			if tt.expectedError {
+				if err == nil {
+					t.Errorf("expected an error but got none")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+
+				// validate query source
+				tpl := "queries/tree-sitter-%s-tags.scm"
+				queryFilename := fmt.Sprintf(tpl, tt.lang)
+
+				// read query file for validation
+				querySource, err := os.ReadFile(queryFilename)
+				if err != nil {
+					t.Errorf("failed to read file %q: %v", queryFilename, err)
+				}
+
+				if data != string(querySource) {
+					t.Errorf("expected data %q, got %q", string(querySource), data)
+				}
+			}
+		})
 	}
 }

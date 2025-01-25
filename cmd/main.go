@@ -44,8 +44,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	trace := true
-	ConfigLogging(&trace, &trace)
+	trace := false
+	debug := false
+	ConfigLogging(&trace, &debug)
 
 	inputPath := "."
 	if len(os.Args) == 2 {
