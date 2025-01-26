@@ -33,11 +33,11 @@ const (
 
 // Tag represents a “tag” extracted from a source file.
 type Tag struct {
-	Name string
-	Path string
-	Line int
-	Text string
-	Kind string
+	FileName string
+	FilePath string
+	Line     int
+	Name     string
+	Kind     string
 }
 
 var (
@@ -233,11 +233,16 @@ func (r *RepoMap) GetTags(fname, relFname string) ([]Tag, error) {
 			}
 		}
 	}
+
 	// Not cached or changed; re-parse
 	data, err := r.GetTagsRaw(fname, relFname)
 	if err != nil {
 		return nil, err
 	}
+
+	// for i, t := range data {
+	// 	fmt.Println(i, t)
+	// }
 
 	if data == nil {
 		data = nil
@@ -279,44 +284,14 @@ func (r *RepoMap) getSourceCodeMapQuery(lang string) (string, error) {
 	return r.querySourceCache[lang], nil
 }
 
-var errUnsupportedFileType = errors.New("unsupported file type")
-
-// GetTagsRaw parses the file with Tree-sitter and extracts "function definitions"
-func (r *RepoMap) GetTagsRaw(fname, relFname string) ([]Tag, error) {
-	// 1) Identify the file's language
-	lang, l, err := grepast.GetLanguageFromFileName(fname)
-	if err != nil || lang == nil {
-		return nil, errUnsupportedFileType
-	}
-
-	// 3) Create parser
-	parser := sitter.NewParser()
-	parser.SetLanguage(lang)
-
-	// 2) Read source code
-	sourceCode, err := os.ReadFile(fname)
+// LoadQuery loads the Tree-sitter query text and compiles a sitter.Query.
+func (r *RepoMap) LoadQuery(lang *sitter.Language, langID string) (*sitter.Query, error) {
+	querySource, err := r.getSourceCodeMapQuery(langID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read file (%s): %v", fname, err)
-	}
-	if len(sourceCode) == 0 {
-		return nil, fmt.Errorf("empty file: %s", fname)
-	}
-
-	// 4) Parse
-	tree := parser.Parse(sourceCode, nil)
-	if tree == nil || tree.RootNode() == nil {
-		return nil, fmt.Errorf("failed to parse file: %s", fname)
-	}
-
-	log.Debug().Str("lang", l).Str("file", fname).Msg("sitter")
-
-	// 5) Load your query
-	querySource, err := r.getSourceCodeMapQuery(l)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read query file (%s): %v", l, err)
+		return nil, fmt.Errorf("failed to read query file (%s): %w", langID, err)
 	}
 	if len(querySource) == 0 {
-		return nil, fmt.Errorf("empty query file: %s", l)
+		return nil, fmt.Errorf("empty query file: %s", langID)
 	}
 
 	q, qErr := sitter.NewQuery(lang, querySource)
@@ -324,12 +299,195 @@ func (r *RepoMap) GetTagsRaw(fname, relFname string) ([]Tag, error) {
 		var queryErr *sitter.QueryError
 		if errors.As(qErr, &queryErr) {
 			if queryErr != nil {
-				return nil, fmt.Errorf("query error: %s at row: %d, column: %d, offset: %d, kind: %v",
-					queryErr.Message, queryErr.Row, queryErr.Column, queryErr.Offset, queryErr.Kind)
+				return nil, fmt.Errorf(
+					"query error: %s at row: %d, column: %d, offset: %d, kind: %v",
+					queryErr.Message, queryErr.Row, queryErr.Column, queryErr.Offset, queryErr.Kind,
+				)
 			}
 			return nil, fmt.Errorf("unexpected nil *sitter.QueryError")
 		}
-		return nil, fmt.Errorf("failed to create query: %v", qErr)
+		return nil, fmt.Errorf("failed to create query: %w", qErr)
+	}
+	return q, nil
+}
+
+func ReadSourceCode(fname string) ([]byte, error) {
+	sourceCode, err := os.ReadFile(fname)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file (%s): %w", fname, err)
+	}
+	if len(sourceCode) == 0 {
+		return nil, fmt.Errorf("empty file: %s", fname)
+	}
+	return sourceCode, nil
+}
+
+// func GetTagsFromQueryCapture(relFname, fname string, q *sitter.Query, tree *sitter.Tree, sourceCode []byte) []Tag {
+// 	// Create a query cursor
+// 	qc := sitter.NewQueryCursor()
+// 	defer qc.Close()
+
+// 	// Execute the query
+// 	captures := qc.Captures(q, tree.RootNode(), sourceCode)
+
+// 	// Initialize the tags slice
+// 	tags := []Tag{}
+
+// 	fmt.Println("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+// 	fmt.Printf("# %s\n", relFname)
+
+// 	// Iterate over all of the query results
+// 	for match, index := captures.Next(); match != nil; match, index = captures.Next() {
+
+// 		c := match.Captures[index]
+
+// 		tag := q.CaptureNames()[c.Index]
+// 		row := int(c.Node.StartPosition().Row)
+// 		id := string(c.Node.Utf8Text(sourceCode))
+
+// 		// Determinie if definition or reference
+// 		switch {
+// 		case strings.HasPrefix(tag, "name.definition."):
+// 			t := Tag{
+// 				Name:     id,
+// 				FileName: relFname,
+// 				FilePath: fname,
+// 				Line:     row,
+// 				Kind:     TagKindDef,
+// 			}
+// 			tags = append(tags, t)
+// 			fmt.Println(t.Line, t.Kind, tag)
+
+// 		case strings.HasPrefix(tag, "name.reference."):
+// 			t := Tag{
+// 				Name:     id,
+// 				FileName: relFname,
+// 				FilePath: fname,
+// 				Line:     row,
+// 				Kind:     TagKindRef,
+// 			}
+// 			tags = append(tags, t)
+// 			fmt.Println(t.Line, t.Kind, tag)
+
+// 		default:
+// 			// continue
+// 		}
+
+// 	}
+
+// 	return tags
+// }
+
+// GetTagsFromQueryCapture extracts tags from the result
+// of a Tree-sitter query on a given file. It iterates through
+// the captures returned by the Tree-sitter query cursor and collects
+// definitions (def) and references (ref). All other captures are ignored.
+func GetTagsFromQueryCapture(relFname, fname string, q *sitter.Query, tree *sitter.Tree, sourceCode []byte) []Tag {
+
+	// Create a new query cursor that will be used to iterate through
+	// the captures of our query on the provided parse tree. The query
+	// cursor manages iteration state for match captures.
+	qc := sitter.NewQueryCursor()
+	defer qc.Close()
+
+	// Execute the query against the provided parse tree, specifying the
+	// source code as well. The captures method returns a Captures object
+	// which allows iteration over matched captures in the parse tree.
+	captures := qc.Captures(q, tree.RootNode(), sourceCode)
+
+	tags := []Tag{}
+
+	fmt.Println("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+	fmt.Printf("# %s\n", relFname)
+
+	// Iterate over all of the query results (i.e., the captures). The Next
+	// method returns a matched result (match) and the index of the capture
+	// (index) within that match. Continue iterating until match is nil.
+	for match, index := captures.Next(); match != nil; match, index = captures.Next() {
+
+		// Retrieve the capture at the current index from the match's list
+		// of captures. This capture includes the node in the AST and the
+		// capture index used to look up the capture name.
+		c := match.Captures[index]
+
+		// Retrieve the name of the capture using the capture index stored in
+		// c.Index. This references the actual capture label (e.g.,
+		// "name.definition.function") in the query's capture names.
+		tag := q.CaptureNames()[c.Index]
+
+		// Convert the node's starting row position to an integer (ie. line number)
+		row := int(c.Node.StartPosition().Row)
+
+		// Extract the raw text from the matched node in the source code. We
+		// convert it from a slice of bytes to a string.
+		name := string(c.Node.Utf8Text(sourceCode))
+
+		// Determine if the capture corresponds to a definition or a reference
+		// by checking prefixes in its name. If neither condition matches, we
+		// skip it.
+		switch {
+		case strings.HasPrefix(tag, "name.definition."):
+			// eg. function, method, type, etc.
+			t := Tag{
+				Name:     name,
+				FileName: relFname,
+				FilePath: fname,
+				Line:     row,
+				Kind:     TagKindDef,
+			}
+			// Append this Tag to our list of tags and log it for debugging.
+			tags = append(tags, t)
+			fmt.Println(t.Line, t.Kind, tag)
+
+		case strings.HasPrefix(tag, "name.reference."):
+			//eg. function call, type usage, etc.
+			t := Tag{
+				Name:     name,
+				FileName: relFname,
+				FilePath: fname,
+				Line:     row,
+				Kind:     TagKindRef,
+			}
+			tags = append(tags, t)
+			fmt.Println(t.Line, t.Kind, tag)
+
+		default:
+			// continue
+		}
+
+	}
+
+	return tags
+}
+
+// GetTagsRaw parses the file with Tree-sitter and extracts "function definitions"
+func (r *RepoMap) GetTagsRaw(fname, relFname string) ([]Tag, error) {
+	// 1) Identify the file's language
+	lang, langID, err := grepast.GetLanguageFromFileName(fname)
+	if err != nil || lang == nil {
+		return nil, grepast.ErrorUnsupportedLanguage
+	}
+
+	// 2) Read source code
+	sourceCode, err := ReadSourceCode(fname)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file (%s): %v", fname, err)
+	}
+
+	// 3) Create parser
+	parser := sitter.NewParser()
+	parser.SetLanguage(lang)
+
+	// 4) Parse
+	tree := parser.Parse(sourceCode, nil)
+	if tree == nil || tree.RootNode() == nil {
+		return nil, fmt.Errorf("failed to parse file: %s", fname)
+	}
+
+	// 5) Load your query
+	q, err := r.LoadQuery(lang, langID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read query file (%s): %v", langID, err)
 	}
 	defer q.Close()
 
@@ -337,54 +495,8 @@ func (r *RepoMap) GetTagsRaw(fname, relFname string) ([]Tag, error) {
 	qc := sitter.NewQueryCursor()
 	defer qc.Close()
 
-	// Iterate over all of the individual captures in the order that they appear.
-	captures := qc.Captures(q, tree.RootNode(), sourceCode)
-
-	var tags []Tag
-	for match, index := captures.Next(); match != nil; match, index = captures.Next() {
-		c := match.Captures[index]
-
-		if c.Node.ChildCount() == 0 {
-			continue
-		}
-
-		// Get the name of the capture
-		captureName := q.CaptureNames()[index]
-		// log.Debug().Str("captureName", captureName).Uint("sitter", index).Msg("sitter")
-
-		// Decide if it's a definition or reference
-		switch {
-		case strings.HasPrefix(captureName, "name.definition."):
-			// E.g. "name.definition.function", "name.definition.method", etc.
-			row := c.Node.StartPosition().Row
-			t := string(c.Node.Utf8Text(sourceCode)) // or node.Utf8Text(code)
-
-			tags = append(tags, Tag{
-				Name: relFname,
-				Path: fname,
-				Line: int(row),
-				Text: t,
-				Kind: TagKindDef,
-			})
-
-		case strings.HasPrefix(captureName, "name.reference."):
-			// E.g. "name.reference.call", "name.reference.type", ...
-			row := c.Node.StartPosition().Row
-			name := string(c.Node.Utf8Text(sourceCode))
-
-			tags = append(tags, Tag{
-				Name: relFname,
-				Path: fname,
-				Line: int(row),
-				Text: name,
-				Kind: TagKindRef,
-			})
-
-		default:
-			// Not a captured name we care about
-		}
-
-	}
+	// Get the tags from the query capture and source code
+	tags := GetTagsFromQueryCapture(relFname, fname, q, tree, sourceCode)
 
 	// 7) Return the list of Tag objects
 	return tags, nil
@@ -396,13 +508,13 @@ func (r *RepoMap) GetTagsRaw(fname, relFname string) ([]Tag, error) {
 
 // getTagsFromFiles Collect all tags from those files
 func (r *RepoMap) getTagsFromFiles(
-	allFnames map[string]struct{},
+	allFnames []string,
 	progress func(),
 ) []Tag {
 
 	var allTags []Tag
 
-	for fname, _ := range allFnames {
+	for _, fname := range allFnames {
 		if progress != nil {
 			progress()
 		}
@@ -422,7 +534,7 @@ func (r *RepoMap) getTagsFromFiles(
 		// Get the tags for this file
 		tg, err := r.GetTags(fname, rel)
 		if err != nil {
-			if err == errUnsupportedFileType {
+			if err == grepast.ErrorUnsupportedLanguage {
 				log.Trace().Msgf("skip %s", fname)
 			} else {
 				log.Warn().Err(err).Msgf("Failed to get tags for %s", fname)
@@ -492,24 +604,23 @@ func (r *RepoMap) getRankedTagsByPageRank(
 	definitions := make(map[tagKey][]Tag)           // (fname, symbol) -> slice of definition Tags
 
 	for _, t := range allTags {
-		rel := r.GetRelFname(t.Path)
-		symbol := t.Text
+		rel := r.GetRelFname(t.FilePath)
 
 		switch t.Kind {
 		case TagKindDef:
-			if defines[symbol] == nil {
-				defines[symbol] = make(map[string]struct{})
+			if defines[t.Name] == nil {
+				defines[t.Name] = make(map[string]struct{})
 			}
-			defines[symbol][rel] = struct{}{}
+			defines[t.Name][rel] = struct{}{}
 
-			k := tagKey{fname: rel, symbol: symbol}
+			k := tagKey{fname: rel, symbol: t.Name}
 			definitions[k] = append(definitions[k], t)
 
 		case TagKindRef:
-			if references[symbol] == nil {
-				references[symbol] = make(map[string]int)
+			if references[t.Name] == nil {
+				references[t.Name] = make(map[string]int)
 			}
-			references[symbol][rel]++
+			references[t.Name][rel]++
 		}
 	}
 
@@ -725,9 +836,9 @@ func (r *RepoMap) GetRankedTagsMap(
 	// Collect all tags from those files
 	allTags := r.getTagsFromFiles(allFnames, nil)
 
-	for i, t := range allTags {
-		fmt.Println(i, t)
-	}
+	// for i, t := range allTags {
+	// 	fmt.Println(i, t)
+	// }
 
 	return ""
 
@@ -740,7 +851,7 @@ func (r *RepoMap) GetRankedTagsMap(
 			continue
 		}
 		// first 10 chars of the text
-		log.Debug().Int("index", i).Str("path", t.Path).Int("line", t.Line).Str("text", fmt.Sprintf("%s ...", t.Text[:20])).Str("kind", t.Kind).Msg("ranked tags")
+		log.Debug().Int("index", i).Str("path", t.FilePath).Int("line", t.Line).Str("text", fmt.Sprintf("%s ...", t.Name[:20])).Str("kind", t.Kind).Msg("ranked tags")
 	}
 
 	special := filterImportantFiles(otherFnames)
@@ -791,13 +902,14 @@ func (r *RepoMap) GetRankedTagsMap(
 	return bestTree
 }
 
+// tr@ck -- improve this chat vs other files. We should have repoFiles and chatFiles
+
 // GetRepoMap is the top-level function (mirroring the Python method) that produces the “repo content”.
 func (r *RepoMap) GetRepoMap(
 	chatFiles, otherFiles []string,
 	mentionedFnames, mentionedIdents map[string]bool,
 	forceRefresh bool,
 ) string {
-	log.Trace().Msg(color.YellowString("GetRepoMap"))
 
 	if r.MaxMapTokens <= 0 {
 		log.Warn().Msgf("Repo-map disabled by max_map_tokens: %d", r.MaxMapTokens)
@@ -901,7 +1013,7 @@ func (r *RepoMap) toTree(tags []Tag, chatFnames []string) string {
 			}
 			linesOfInterest = []int{}
 			curFname = tag.Name
-			curAbsFname = tag.Path
+			curAbsFname = tag.FilePath
 		}
 		if linesOfInterest != nil {
 			linesOfInterest = append(linesOfInterest, tag.Line)
@@ -1025,11 +1137,13 @@ func FindSrcFiles(path string) []string {
 			return nil
 		}
 		if grepast.MatchIgnorePattern(p, grepast.DefaultIgnorePatterns) {
+			log.Trace().Str("op", "source files").Str("path", p).Msg("skip")
 			return nil
 		}
 		if info.IsDir() {
 			return nil
 		}
+		log.Debug().Str("op", "source files").Str("path", p).Msg("add")
 		srcFiles = append(srcFiles, p)
 		return nil
 	})

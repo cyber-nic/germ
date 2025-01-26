@@ -12,4 +12,5 @@ demo:
 	go run cmd/main.go > orb.map
 
 aider:
+	rm -rf ./.aider.tags.cache.v3
 	PYTHONPATH=/code/aider python3 -m aider.main --show-repo-map > aider.map

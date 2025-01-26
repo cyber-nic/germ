@@ -9,41 +9,44 @@ func TestUniqueElements(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    [][]string
-		expected map[string]struct{}
+		expected []string
 	}{
 		{
-			name:     "No input slices",
-			input:    [][]string{},
-			expected: map[string]struct{}{},
+			name: "single slice with filesystem paths",
+			input: [][]string{
+				{"/home/user/docs", "/home/user/images", "/home/user/docs"},
+			},
+			expected: []string{"/home/user/docs", "/home/user/images"},
 		},
 		{
-			name:     "Single slice with unique elements",
-			input:    [][]string{{"a", "b", "c"}},
-			expected: map[string]struct{}{"a": {}, "b": {}, "c": {}},
+			name: "multiple slices with overlapping filesystem paths",
+			input: [][]string{
+				{"/home/user/docs", "/home/user/images"},
+				{"/home/user/images", "/home/user/music"},
+			},
+			expected: []string{"/home/user/docs", "/home/user/images", "/home/user/music"},
 		},
 		{
-			name:     "Two slices with overlapping elements",
-			input:    [][]string{{"a", "b", "c"}, {"b", "c", "d"}},
-			expected: map[string]struct{}{"a": {}, "b": {}, "c": {}, "d": {}},
+			name:     "empty input with filesystem paths",
+			input:    [][]string{{}},
+			expected: []string{},
 		},
 		{
-			name:     "Multiple slices with some empty",
-			input:    [][]string{{"a", "b"}, {}, {"c", "a"}},
-			expected: map[string]struct{}{"a": {}, "b": {}, "c": {}},
-		},
-		{
-			name:     "All slices are empty",
-			input:    [][]string{{}, {}},
-			expected: map[string]struct{}{},
+			name: "completely unique filesystem paths",
+			input: [][]string{
+				{"/var/log/syslog", "/var/log/auth.log"},
+				{"/etc/passwd", "/etc/hosts"},
+			},
+			expected: []string{"/var/log/syslog", "/var/log/auth.log", "/etc/passwd", "/etc/hosts"},
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := uniqueElements(tt.input...)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := uniqueElements(test.input...)
 
-			if !reflect.DeepEqual(result, tt.expected) {
-				t.Errorf("UniqueElements() = %v, expected %v", result, tt.expected)
+			if !reflect.DeepEqual(got, test.expected) {
+				t.Errorf("uniqueElementsOrdered(%v) = %v; want %v", test.input, got, test.expected)
 			}
 		})
 	}

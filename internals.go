@@ -17,19 +17,20 @@ func PrintStructOut(t interface{}) {
 	PrintStruct(os.Stdout, t)
 }
 
-// uniqueElements combines two or more string slices and returns a map of unique unique elements.
-func uniqueElements(slices ...[]string) map[string]struct{} {
-	// Initialize a map to track unique elements
+func uniqueElements(slices ...[]string) []string {
 	uniqueMap := make(map[string]struct{})
+	result := []string{}
 
-	// Iterate over all provided slices
 	for _, slice := range slices {
 		for _, elem := range slice {
-			uniqueMap[elem] = struct{}{}
+			if _, exists := uniqueMap[elem]; !exists {
+				uniqueMap[elem] = struct{}{}
+				result = append(result, elem)
+			}
 		}
 	}
 
-	return uniqueMap
+	return result
 }
 
 // filterImportantFiles is a stub to mimic Python's `filter_important_files`.
