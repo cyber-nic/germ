@@ -173,7 +173,7 @@ func Demo() {
 
 	// If we want to see the line "// Some line of code," that's on line 3 (0-based).
 	linesOfInterest := []int{2, 3}
-	rendered := rm.renderTree(sampleFile, "demo.go", linesOfInterest)
+	rendered, _ := rm.renderTree(sampleFile, "demo.go", linesOfInterest)
 
 	if !strings.Contains(rendered, "func Demo()") {
 		t.Errorf("Expected snippet to contain 'func Demo()', got:\n%s", rendered)
@@ -338,7 +338,7 @@ func TestGetTagsFromQueryCapture_EmptySource(t *testing.T) {
 	}
 
 	// Invoke the function under test
-	tags := GetTagsFromQueryCapture("rel/path.go", "/absolute/path.go", q, tree, sourceCode)
+	tags := GetTagsFromQueryCapture("rel/path.go", "/absolute/path.go", q, tree, sourceCode, nil)
 
 	// We expect no tags
 	assert.Empty(t, tags, "Expected no tags for empty source code")
@@ -371,11 +371,7 @@ func TestGetTagsFromQueryCapture_SimpleDef(t *testing.T) {
 	}
 
 	// Call the function we want to test
-	tags := GetTagsFromQueryCapture("rel/path.go", "/absolute/path.go", q, tree, sourceCode)
-
-	// Because this is a mock scenario with no real parse, we'll show a hypothetical
-	// assertion. Once you have an actual parse, you can check the precise results.
-	fmt.Printf("Tags: %+v\n", tags)
+	tags := GetTagsFromQueryCapture("rel/path.go", "/absolute/path.go", q, tree, sourceCode, nil)
 
 	// Example: we expect exactly one definition. Adjust to reality once
 	// your parser/query code is set up.
@@ -422,7 +418,7 @@ func TestGetTagsFromQueryCapture_SimpleRef(t *testing.T) {
 	}
 
 	// Invoke the function
-	tags := GetTagsFromQueryCapture("rel/path.go", "/absolute/path.go", q, tree, sourceCode)
+	tags := GetTagsFromQueryCapture("rel/path.go", "/absolute/path.go", q, tree, sourceCode, nil)
 
 	assert.Len(t, tags, 2, "Expected exactly one reference capture")
 	assert.Equal(t, TagKindRef, tags[0].Kind, "Expected the capture to be recognized as a reference")

@@ -9,12 +9,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	// Import the grep-ast library
 	grepast "github.com/cyber-nic/grep-ast"
-	"github.com/fatih/color"
 	"github.com/rs/zerolog/log"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	"gonum.org/v1/gonum/graph"
@@ -22,9 +20,9 @@ import (
 	"gonum.org/v1/gonum/graph/network"
 )
 
-// ------------------------------------------------------------------------------------
-// Structs and Stubs
-// ------------------------------------------------------------------------------------
+// chat files: files that are part of the chat
+// other files: files that are not (yet) part of the chat
+// warned_files: files that have been warned about and are excluded
 
 const (
 	TagKindDef = "def"
@@ -45,17 +43,8 @@ var (
 	ErrDatabase    = errors.New("database error")
 )
 
-// TreeContextCacheItem holds the (rendered) context and file mtime for caching.
-type TreeContextCacheItem struct {
-	Context string
-	Mtime   int64
-}
-
 // RepoMap is the Go equivalent of the Python class `RepoMap`.
 type RepoMap struct {
-	CacheVersion      int
-	TagsCacheDir      string
-	WarnedFiles       map[string]bool
 	Refresh           string
 	Verbose           bool
 	Root              string
@@ -64,47 +53,13 @@ type RepoMap struct {
 	MaxMapTokens      int
 	MaxCtxWindow      int
 	MapMulNoFiles     int
-	TreeCache         map[string]string // For storing rendered code trees
-	TreeContextCache  map[string]TreeContextCacheItem
-	MapCache          map[string]string
 	MapProcessingTime float64
 	LastMap           string
-	TagsCache         CacheStub
 	querySourceCache  map[string]string
 }
 
 // ModelStub simulates the main_model used in Python code (for token_count, etc.).
 type ModelStub struct{}
-
-// CacheStub simulates the diskcache.Cache used in Python (here, just an in-memory map).
-type CacheStub struct {
-	mu    sync.RWMutex
-	store map[string]interface{}
-}
-
-// ------------------------------------------------------------------------------------
-// Implementations
-// ------------------------------------------------------------------------------------
-
-// NewCacheStub initializes an in-memory “cache”.
-func NewCacheStub() *CacheStub {
-	return &CacheStub{
-		store: make(map[string]interface{}),
-	}
-}
-
-func (c *CacheStub) Get(key string) (interface{}, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	val, ok := c.store[key]
-	return val, ok
-}
-
-func (c *CacheStub) Set(key string, value interface{}) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.store[key] = value
-}
 
 // TokenCount is a naive token estimator. Real code might call tiktoken or other logic.
 func (m *ModelStub) TokenCount(text string) int {
@@ -133,9 +88,6 @@ func NewRepoMap(
 	}
 
 	r := &RepoMap{
-		CacheVersion:     3,
-		TagsCacheDir:     fmt.Sprintf(".aider.tags.cache.v%d", 3),
-		WarnedFiles:      make(map[string]bool),
 		Refresh:          refresh,
 		Verbose:          verbose,
 		Root:             root,
@@ -144,10 +96,6 @@ func NewRepoMap(
 		MaxMapTokens:     maxMapTokens,
 		MapMulNoFiles:    mapMulNoFiles,
 		MaxCtxWindow:     maxContextWindow,
-		TreeCache:        make(map[string]string),
-		TreeContextCache: make(map[string]TreeContextCacheItem),
-		MapCache:         make(map[string]string),
-		TagsCache:        *NewCacheStub(),
 		querySourceCache: make(map[string]string),
 	}
 
@@ -155,26 +103,6 @@ func NewRepoMap(
 		fmt.Printf("RepoMap initialized with map_mul_no_files: %d\n", mapMulNoFiles)
 	}
 	return r
-}
-
-// LoadTagsCache is a stub. In Python, we'd open an on-disk cache here.
-func (r *RepoMap) LoadTagsCache() {}
-
-// SaveTagsCache is a stub for persisting changes to disk in Python.
-func (r *RepoMap) SaveTagsCache() {}
-
-// ------------------------------------------------------------------------------------
-// Helper Methods
-// ------------------------------------------------------------------------------------
-
-// GetMtime returns the file's modification time in Unix seconds, or -1 on error.
-func (r *RepoMap) GetMtime(fname string) int64 {
-	fi, err := os.Stat(fname)
-	if err != nil {
-		log.Warn().Err(err).Msgf("File not found or stat error: %s", fname)
-		return -1
-	}
-	return fi.ModTime().Unix()
 }
 
 // GetRelFname returns fname relative to r.Root. If that fails, returns fname as-is.
@@ -209,51 +137,19 @@ func (r *RepoMap) TokenCount(text string) float64 {
 	return ratio * float64(len(text))
 }
 
-// ------------------------------------------------------------------------------------
-// Tag Extraction: getTags, getTagsRaw
-// ------------------------------------------------------------------------------------
-
-// GetTags checks the in-memory cache first, and if not found (or outdated), calls GetTagsRaw.
-func (r *RepoMap) GetTags(fname, relFname string) ([]Tag, error) {
-	fileMtime := r.GetMtime(fname)
-	if fileMtime < 0 {
-		return nil, fmt.Errorf("failed to get mtime for file: %s", fname)
-	}
-
-	// Check the cache
-	cacheKey := fname
-	val, ok := r.TagsCache.Get(cacheKey)
-	if ok {
-		stored, _ := val.(map[string]interface{})
-		if stored != nil {
-			mt, _ := stored["mtime"].(int64)
-			if mt == fileMtime {
-				data, _ := stored["data"].([]Tag)
-				return data, nil
-			}
-		}
-	}
+// GetFileTags calls GetTagsRaw and filters out short names and common words.
+func (r *RepoMap) GetFileTags(fname, relFname string, filter TagFilter) ([]Tag, error) {
 
 	// Not cached or changed; re-parse
-	data, err := r.GetTagsRaw(fname, relFname)
+	data, err := r.GetTagsRaw(fname, relFname, filter)
 	if err != nil {
 		return nil, err
 	}
-
-	// for i, t := range data {
-	// 	fmt.Println(i, t)
-	// }
 
 	if data == nil {
 		data = nil
 	}
 
-	newStore := map[string]interface{}{
-		"mtime": fileMtime,
-		"data":  data,
-	}
-	r.TagsCache.Set(cacheKey, newStore)
-	r.SaveTagsCache()
 	return data, nil
 }
 
@@ -322,67 +218,14 @@ func ReadSourceCode(fname string) ([]byte, error) {
 	return sourceCode, nil
 }
 
-// func GetTagsFromQueryCapture(relFname, fname string, q *sitter.Query, tree *sitter.Tree, sourceCode []byte) []Tag {
-// 	// Create a query cursor
-// 	qc := sitter.NewQueryCursor()
-// 	defer qc.Close()
-
-// 	// Execute the query
-// 	captures := qc.Captures(q, tree.RootNode(), sourceCode)
-
-// 	// Initialize the tags slice
-// 	tags := []Tag{}
-
-// 	fmt.Println("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
-// 	fmt.Printf("# %s\n", relFname)
-
-// 	// Iterate over all of the query results
-// 	for match, index := captures.Next(); match != nil; match, index = captures.Next() {
-
-// 		c := match.Captures[index]
-
-// 		tag := q.CaptureNames()[c.Index]
-// 		row := int(c.Node.StartPosition().Row)
-// 		id := string(c.Node.Utf8Text(sourceCode))
-
-// 		// Determinie if definition or reference
-// 		switch {
-// 		case strings.HasPrefix(tag, "name.definition."):
-// 			t := Tag{
-// 				Name:     id,
-// 				FileName: relFname,
-// 				FilePath: fname,
-// 				Line:     row,
-// 				Kind:     TagKindDef,
-// 			}
-// 			tags = append(tags, t)
-// 			fmt.Println(t.Line, t.Kind, tag)
-
-// 		case strings.HasPrefix(tag, "name.reference."):
-// 			t := Tag{
-// 				Name:     id,
-// 				FileName: relFname,
-// 				FilePath: fname,
-// 				Line:     row,
-// 				Kind:     TagKindRef,
-// 			}
-// 			tags = append(tags, t)
-// 			fmt.Println(t.Line, t.Kind, tag)
-
-// 		default:
-// 			// continue
-// 		}
-
-// 	}
-
-// 	return tags
-// }
+type TagFilter func(name string) bool
 
 // GetTagsFromQueryCapture extracts tags from the result
 // of a Tree-sitter query on a given file. It iterates through
 // the captures returned by the Tree-sitter query cursor and collects
 // definitions (def) and references (ref). All other captures are ignored.
-func GetTagsFromQueryCapture(relFname, fname string, q *sitter.Query, tree *sitter.Tree, sourceCode []byte) []Tag {
+// filter is a function that accepts the name of a capture and returns bool false if it should be skipped.
+func GetTagsFromQueryCapture(relFname, fname string, q *sitter.Query, tree *sitter.Tree, sourceCode []byte, filter TagFilter) []Tag {
 
 	// Create a new query cursor that will be used to iterate through
 	// the captures of our query on the provided parse tree. The query
@@ -396,9 +239,6 @@ func GetTagsFromQueryCapture(relFname, fname string, q *sitter.Query, tree *sitt
 	captures := qc.Captures(q, tree.RootNode(), sourceCode)
 
 	tags := []Tag{}
-
-	fmt.Println("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
-	fmt.Printf("# %s\n", relFname)
 
 	// Iterate over all of the query results (i.e., the captures). The Next
 	// method returns a matched result (match) and the index of the capture
@@ -422,46 +262,45 @@ func GetTagsFromQueryCapture(relFname, fname string, q *sitter.Query, tree *sitt
 		// convert it from a slice of bytes to a string.
 		name := string(c.Node.Utf8Text(sourceCode))
 
+		// Allows a user-provided list of terms to skip: eg. bool, string, etc.
+		if filter != nil && !filter(name) {
+			continue
+		}
+
 		// Determine if the capture corresponds to a definition or a reference
 		// by checking prefixes in its name. If neither condition matches, we
 		// skip it.
 		switch {
 		case strings.HasPrefix(tag, "name.definition."):
 			// eg. function, method, type, etc.
-			t := Tag{
+			tags = append(tags, Tag{
 				Name:     name,
 				FileName: relFname,
 				FilePath: fname,
 				Line:     row,
 				Kind:     TagKindDef,
-			}
-			// Append this Tag to our list of tags and log it for debugging.
-			tags = append(tags, t)
-			fmt.Println(t.Line, t.Kind, tag)
+			})
 
 		case strings.HasPrefix(tag, "name.reference."):
 			//eg. function call, type usage, etc.
-			t := Tag{
+			tags = append(tags, Tag{
 				Name:     name,
 				FileName: relFname,
 				FilePath: fname,
 				Line:     row,
 				Kind:     TagKindRef,
-			}
-			tags = append(tags, t)
-			fmt.Println(t.Line, t.Kind, tag)
+			})
 
 		default:
 			// continue
 		}
-
 	}
 
 	return tags
 }
 
 // GetTagsRaw parses the file with Tree-sitter and extracts "function definitions"
-func (r *RepoMap) GetTagsRaw(fname, relFname string) ([]Tag, error) {
+func (r *RepoMap) GetTagsRaw(fname, relFname string, filter TagFilter) ([]Tag, error) {
 	// 1) Identify the file's language
 	lang, langID, err := grepast.GetLanguageFromFileName(fname)
 	if err != nil || lang == nil {
@@ -496,43 +335,38 @@ func (r *RepoMap) GetTagsRaw(fname, relFname string) ([]Tag, error) {
 	defer qc.Close()
 
 	// Get the tags from the query capture and source code
-	tags := GetTagsFromQueryCapture(relFname, fname, q, tree, sourceCode)
+	tags := GetTagsFromQueryCapture(relFname, fname, q, tree, sourceCode, filter)
 
 	// 7) Return the list of Tag objects
 	return tags, nil
 }
 
-// ------------------------------------------------------------------------------------
-// Ranked Tags + RepoMap generation
-// ------------------------------------------------------------------------------------
-
-// getTagsFromFiles Collect all tags from those files
+// getTagsFromFiles collect all tags from those files
 func (r *RepoMap) getTagsFromFiles(
 	allFnames []string,
-	progress func(),
+	ignoreWords map[string]struct{},
 ) []Tag {
 
 	var allTags []Tag
 
 	for _, fname := range allFnames {
-		if progress != nil {
-			progress()
-		}
-		fi, err := os.Stat(fname)
-		if err != nil || fi.IsDir() {
-			if !r.WarnedFiles[fname] {
-				log.Warn().Err(err).Msgf("Repo-map can't include %s", fname)
-				fmt.Println("Has it been deleted from the file system but not from git?")
-				r.WarnedFiles[fname] = true
-			}
-			continue
-		}
-
 		// Get the relative file name
 		rel := r.GetRelFname(fname)
 
+		// Filter out short names and common words
+		// tr@ck - where is the right place to put this filter?
+		filter := func(name string) bool {
+			if len(name) <= 3 {
+				return false
+			}
+			if _, ok := ignoreWords[strings.ToLower(name)]; ok {
+				return false
+			}
+			return true
+		}
+
 		// Get the tags for this file
-		tg, err := r.GetTags(fname, rel)
+		tg, err := r.GetFileTags(fname, rel, filter)
 		if err != nil {
 			if err == grepast.ErrorUnsupportedLanguage {
 				log.Trace().Msgf("skip %s", fname)
@@ -545,45 +379,8 @@ func (r *RepoMap) getTagsFromFiles(
 			allTags = append(allTags, tg...)
 		}
 	}
+
 	return allTags
-}
-
-// getRankedTagsSimple is a simple ranking algorithm based on the number of defs per file.
-func (r *RepoMap) getRankedTagsSimple(
-	allTags []Tag,
-	mentionedFnames, mentionedIdents map[string]bool,
-	progress func(),
-) []Tag {
-	log.Trace().Msg(color.YellowString("getRankedTagsSimple"))
-
-	// tr@ck
-	// Instead of a true pagerank, we do a naive sorting by # of defs per file.
-	defScore := make(map[string]int)
-	for _, t := range allTags {
-		if t.Kind == TagKindDef {
-			defScore[t.Name]++
-		}
-	}
-
-	PrintStructOut(defScore)
-
-	// Sort allTags by defScore descending, then by filename, line ascending.
-	sortable := make([]Tag, len(allTags))
-	copy(sortable, allTags)
-
-	simpleSort(sortable, func(a, b Tag) bool {
-		as := defScore[a.Name]
-		bs := defScore[b.Name]
-		if as != bs {
-			return as > bs
-		}
-		if a.Name != b.Name {
-			return a.Name < b.Name
-		}
-		return a.Line < b.Line
-	})
-
-	return sortable
 }
 
 type tagKey struct {
@@ -591,13 +388,7 @@ type tagKey struct {
 	symbol string // the actual identifier
 }
 
-func (r *RepoMap) getRankedTagsByPageRank(
-	allTags []Tag,
-	mentionedFnames, mentionedIdents map[string]bool,
-	progress func(),
-) []Tag {
-	log.Trace().Msg(color.YellowString("GetRankedTagsMap (PageRank)"))
-
+func (r *RepoMap) getRankedTagsByPageRank(allTags []Tag, mentionedFnames, mentionedIdents map[string]bool) []Tag {
 	// 1) Collect references, definitions
 	defines := make(map[string]map[string]struct{}) // symbol -> set of filenames that define it
 	references := make(map[string]map[string]int)   // symbol -> map of (referencerFile -> countOfRefs)
@@ -665,7 +456,6 @@ func (r *RepoMap) getRankedTagsByPageRank(
 
 	// 3) For each ident, link referencing file -> defining file with weight
 	for symbol, refMap := range references {
-		log.Debug().Msg(symbol)
 		defFiles := defines[symbol]
 		if len(defFiles) == 0 {
 			continue
@@ -722,7 +512,8 @@ func (r *RepoMap) getRankedTagsByPageRank(
 	// your own. For now, we do unpersonalized for demonstration.)
 	pr := network.PageRank(g, 0.85, 1e-6) // no direct personalization used
 
-	PrintStructOut(pr)
+	// fmt.Println("PageRank results:")
+	// PrintStructOut(pr)
 
 	// 6) Distribute rank from each src node across its out edges
 	edgeRanks := make(map[struct {
@@ -770,6 +561,7 @@ func (r *RepoMap) getRankedTagsByPageRank(
 		symbol string
 		rank   float64
 	}
+
 	var defRankSlice []defRank
 	for k, v := range edgeRanks {
 		defRankSlice = append(defRankSlice, defRank{
@@ -819,14 +611,6 @@ func (r *RepoMap) GetRankedTagsMap(
 	mentionedFnames, mentionedIdents map[string]bool,
 	forceRefresh bool,
 ) string {
-	cacheKey := strings.Join(chatFnames, "|") + "||" + strings.Join(otherFnames, "|") +
-		fmt.Sprintf("||%d", maxMapTokens)
-
-	if r.Refresh != "always" && !forceRefresh {
-		if val, ok := r.MapCache[cacheKey]; ok {
-			return val
-		}
-	}
 
 	startTime := time.Now()
 
@@ -834,34 +618,35 @@ func (r *RepoMap) GetRankedTagsMap(
 	allFnames := uniqueElements(chatFnames, otherFnames)
 
 	// Collect all tags from those files
-	allTags := r.getTagsFromFiles(allFnames, nil)
+	allTags := r.getTagsFromFiles(allFnames, commonWords)
 
-	// for i, t := range allTags {
-	// 	fmt.Println(i, t)
-	// }
-
-	return ""
-
-	// rankedTags := r.getRankedTagsSimple(allTags, mentionedFnames, mentionedIdents, nil)
-	rankedTags := r.getRankedTagsByPageRank(allTags, mentionedFnames, mentionedIdents, nil)
+	// Get ranked tags by PageRank
+	rankedTags := r.getRankedTagsByPageRank(allTags, mentionedFnames, mentionedIdents)
 
 	// tr@ck
+	topFive := 5
 	for i, t := range rankedTags {
+		if topFive == 0 {
+			break
+		}
 		if t.Name == "doc" {
 			continue
 		}
-		// first 10 chars of the text
-		log.Debug().Int("index", i).Str("path", t.FilePath).Int("line", t.Line).Str("text", fmt.Sprintf("%s ...", t.Name[:20])).Str("kind", t.Kind).Msg("ranked tags")
+		// first n chars
+		log.Info().Int("index", i).Str("file", t.FileName).Int("line", t.Line).Str("tag", t.Name).Msg("tags")
+		topFive--
 	}
 
-	special := filterImportantFiles(otherFnames)
+	// special := filterImportantFiles(otherFnames)
 
-	// Prepend special files as “important”.
-	var specialTags []Tag
-	for _, sf := range special {
-		specialTags = append(specialTags, Tag{Name: r.GetRelFname(sf)})
-	}
-	finalTags := append(specialTags, rankedTags...)
+	// // Prepend special files as “important”.
+	// var specialTags []Tag
+	// for _, sf := range special {
+	// 	specialTags = append(specialTags, Tag{Name: r.GetRelFname(sf)})
+	// }
+	// finalTags := append(specialTags, rankedTags...)
+
+	finalTags := rankedTags
 
 	bestTree := ""
 	bestTreeTokens := 0.0
@@ -897,7 +682,6 @@ func (r *RepoMap) GetRankedTagsMap(
 	endTime := time.Now()
 	r.MapProcessingTime = endTime.Sub(startTime).Seconds()
 
-	r.MapCache[cacheKey] = bestTree
 	r.LastMap = bestTree
 	return bestTree
 }
@@ -959,7 +743,7 @@ func (r *RepoMap) GetRepoMap(
 		return ""
 	}
 
-	fmt.Println(filesListing)
+	// fmt.Println(filesListing)
 
 	if r.Verbose {
 		numTokens := r.TokenCount(filesListing)
@@ -970,10 +754,12 @@ func (r *RepoMap) GetRepoMap(
 	if len(chatFiles) > 0 {
 		other = "other "
 	}
+
 	var repoContent string
 	if r.RepoContentPx != "" {
 		repoContent = strings.ReplaceAll(r.RepoContentPx, "{other}", other)
 	}
+
 	repoContent += filesListing
 	return repoContent
 }
@@ -1005,7 +791,10 @@ func (r *RepoMap) toTree(tags []Tag, chatFnames []string) string {
 		if tag.Name != curFname {
 			if curFname != "" && linesOfInterest != nil {
 				output.WriteString("\n" + curFname + ":\n")
-				rendered := r.renderTree(curAbsFname, curFname, linesOfInterest)
+				rendered, err := r.renderTree(curAbsFname, curFname, linesOfInterest)
+				if err != nil {
+					log.Warn().Err(err).Msgf("Failed to render tree for %s", curFname)
+				}
 				output.WriteString(rendered)
 			}
 			if tag.Name == "____dummy____" {
@@ -1030,26 +819,11 @@ func (r *RepoMap) toTree(tags []Tag, chatFnames []string) string {
 }
 
 // renderTree uses a grep-ast TreeContext to produce a nice snippet with lines of interest expanded.
-func (r *RepoMap) renderTree(absFname, relFname string, linesOfInterest []int) string {
-	mtime := r.GetMtime(absFname)
-	if mtime < 0 {
-		return ""
-	}
-
-	// Key is (relFname + lines + mtime)
-	intsStr := make([]string, 0, len(linesOfInterest))
-	for _, v := range linesOfInterest {
-		intsStr = append(intsStr, fmt.Sprintf("%d", v))
-	}
-	cacheKey := relFname + "|" + strings.Join(intsStr, ",") + fmt.Sprintf("|%d", mtime)
-
-	if cached, ok := r.TreeCache[cacheKey]; ok {
-		return cached
-	}
+func (r *RepoMap) renderTree(absFname, relFname string, linesOfInterest []int) (string, error) {
 
 	code, err := os.ReadFile(absFname)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("failed to read file (%s): %w", absFname, err)
 	}
 
 	// Build a grep-ast TreeContext.
@@ -1067,6 +841,12 @@ func (r *RepoMap) renderTree(absFname, relFname string, linesOfInterest []int) s
 		ShowTopOfFileParentScope: false,
 		LinesOfInterestPadding:   0,
 	})
+	if err != nil {
+		if err == grepast.ErrorUnsupportedLanguage || err == grepast.ErrorUnrecognizedFiletype {
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to create tree context: %w", err)
+	}
 
 	// Convert []int to map[int]struct{}
 	// tr@ck -- could this be avoided?
@@ -1082,8 +862,7 @@ func (r *RepoMap) renderTree(absFname, relFname string, linesOfInterest []int) s
 
 	res := tc.Format()
 
-	r.TreeCache[cacheKey] = res
-	return res
+	return res, nil
 }
 
 // getRandomColor replicates the Python get_random_color using HSV → RGB.
@@ -1137,63 +916,15 @@ func FindSrcFiles(path string) []string {
 			return nil
 		}
 		if grepast.MatchIgnorePattern(p, grepast.DefaultIgnorePatterns) {
-			log.Trace().Str("op", "source files").Str("path", p).Msg("skip")
+			// log.Trace().Str("op", "source files").Str("path", p).Msg("skip")
 			return nil
 		}
 		if info.IsDir() {
 			return nil
 		}
-		log.Debug().Str("op", "source files").Str("path", p).Msg("add")
+		// log.Debug().Str("op", "source files").Str("path", p).Msg("add")
 		srcFiles = append(srcFiles, p)
 		return nil
 	})
 	return srcFiles
-}
-
-// getSupportedLanguagesMD is a stub. The Python version shows a Markdown table of supported languages.
-func getSupportedLanguagesMD() string {
-	return `
-| Language | File extension | Repo map | Linter |
-|:--------:|:--------------:|:--------:|:------:|
-| Python   | .py           |   ✓      |   ✓    |
-| Go       | .go           |   ✓      |   ✓    |
-`
-}
-
-// ------------------------------------------------------------------------------------
-// main function (equivalent to `if __name__ == "__main__":` in Python)
-// ------------------------------------------------------------------------------------
-func main() {
-	args := os.Args
-	if len(args) < 2 {
-		fmt.Println("Usage: go run repomap.go [files_or_directories...]")
-		return
-	}
-	fnames := args[1:]
-
-	var chatFnames, otherFnames []string
-	for _, fname := range fnames {
-		fi, err := os.Stat(fname)
-		if err == nil && fi.IsDir() {
-			chatFnames = append(chatFnames, FindSrcFiles(fname)...)
-		} else {
-			chatFnames = append(chatFnames, fname)
-		}
-	}
-
-	rm := NewRepoMap(
-		1024,         // mapTokens
-		".",          // root
-		&ModelStub{}, // mainModel
-		"",           // repoContentPrefix
-		false,        // verbose
-		16000,        // maxContextWindow
-		8,            // mapMulNoFiles
-		"auto",       // refresh
-	)
-
-	// Generate the repo map (a textual summary)
-	repoMap := rm.GetRankedTagsMap(chatFnames, otherFnames, 1024, nil, nil, false)
-	fmt.Println(len(repoMap))
-	fmt.Println(repoMap)
 }
