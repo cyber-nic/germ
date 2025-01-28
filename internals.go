@@ -77,7 +77,7 @@ var commonWords = map[string]struct{}{
 	"var": {}, "func": {}, "type": {}, "struct": {}, "interface": {}, "msgf": {},
 	"string": {}, "strings": {}, "bool": {}, "byte": {}, "error": {}, "uint": {}, "warn": {},
 	"range": {}, "return": {}, "case": {}, "map": {}, "make": {}, "sprintf": {},
-	"append": {}, "len": {}, "print": {}, "println": {}, "main": {}, "float32": {},
+	"append": {}, "len": {}, "print": {}, "println": {}, "float32": {},
 	"float64": {}, "int64": {}, "int32": {}, "int16": {}, "int8": {}, "uint64": {},
 	"uint32": {}, "uint16": {}, "uint8": {}, "uintptr": {}, "complex64": {},
 	"complex128": {}, "chan": {}, "go": {}, "select": {}, "defer": {}, "panic": {},

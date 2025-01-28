@@ -342,10 +342,7 @@ func (r *RepoMap) GetTagsRaw(fname, relFname string, filter TagFilter) ([]Tag, e
 }
 
 // getTagsFromFiles collect all tags from those files
-func (r *RepoMap) getTagsFromFiles(
-	allFnames []string,
-	ignoreWords map[string]struct{},
-) []Tag {
+func (r *RepoMap) getTagsFromFiles(allFnames []string, ignoreWords map[string]struct{}) []Tag {
 
 	var allTags []Tag
 
@@ -356,7 +353,7 @@ func (r *RepoMap) getTagsFromFiles(
 		// Filter out short names and common words
 		// tr@ck - where is the right place to put this filter?
 		filter := func(name string) bool {
-			if len(name) <= 3 {
+			if len(name) <= 2 {
 				return false
 			}
 			if _, ok := ignoreWords[strings.ToLower(name)]; ok {
@@ -375,6 +372,13 @@ func (r *RepoMap) getTagsFromFiles(
 			}
 			continue
 		}
+
+		// ndelorme - file tags
+		// fmt.Println("Tags for file:", fname)
+		// for _, t := range tg {
+		// 	fmt.Printf("- %s / %d / %s\n", t.Kind, t.Line, t.Name)
+		// }
+
 		if tg != nil {
 			allTags = append(allTags, tg...)
 		}
@@ -389,105 +393,34 @@ type tagKey struct {
 }
 
 func (r *RepoMap) getRankedTagsByPageRank(allTags []Tag, mentionedFnames, mentionedIdents map[string]bool) []Tag {
-	// 1) Collect references, definitions
-	defines := make(map[string]map[string]struct{}) // symbol -> set of filenames that define it
-	references := make(map[string]map[string]int)   // symbol -> map of (referencerFile -> countOfRefs)
-	definitions := make(map[tagKey][]Tag)           // (fname, symbol) -> slice of definition Tags
 
-	for _, t := range allTags {
-		rel := r.GetRelFname(t.FilePath)
+	//--------------------------------------------------------
+	// 1) Build up references/defines data structures
+	//--------------------------------------------------------
+	defines, references, definitions, identifiers := r.buildReferenceMaps(allTags)
 
-		switch t.Kind {
-		case TagKindDef:
-			if defines[t.Name] == nil {
-				defines[t.Name] = make(map[string]struct{})
-			}
-			defines[t.Name][rel] = struct{}{}
-
-			k := tagKey{fname: rel, symbol: t.Name}
-			definitions[k] = append(definitions[k], t)
-
-		case TagKindRef:
-			if references[t.Name] == nil {
-				references[t.Name] = make(map[string]int)
-			}
-			references[t.Name][rel]++
-		}
+	// ndelorme
+	fmt.Printf("\n\n## defines:")
+	for k, v := range defines {
+		fmt.Printf("\n- %s: %v", k, v)
+	}
+	fmt.Printf("\n\n## definitions:")
+	for k, v := range definitions {
+		fmt.Printf("\n- %s: %v", k, v)
+	}
+	fmt.Printf("\n\n## references:")
+	for k, v := range references {
+		fmt.Printf("\n- %s: %v", k, v)
+	}
+	fmt.Printf("\n\n## idents:")
+	for k := range identifiers {
+		fmt.Printf("\n- %s", k)
 	}
 
-	// If references is empty, fall back to references=defines
-	if len(references) == 0 {
-		references = make(map[string]map[string]int)
-		for sym, defFiles := range defines {
-			references[sym] = make(map[string]int)
-			for df := range defFiles {
-				references[sym][df]++
-			}
-		}
-	}
-
-	// 2) Build a multi directed graph
-	g := multi.NewWeightedDirectedGraph()
-
-	// Keep track of the node ID for each rel_fname
-	nodeByFile := make(map[string]graph.Node)
-
-	// Gather all relevant filenames
-	fileSet := make(map[string]struct{})
-	for _, defFiles := range defines {
-		for f := range defFiles {
-			fileSet[f] = struct{}{}
-		}
-	}
-	for _, refMap := range references {
-		for f := range refMap {
-			fileSet[f] = struct{}{}
-		}
-	}
-
-	// Create node for each file
-	for f := range fileSet {
-		n := g.NewNode()
-		g.AddNode(n)
-		nodeByFile[f] = n
-	}
-
-	fmt.Printf("Number of nodes (files): %d\n", g.Nodes().Len())
-
-	// 3) For each ident, link referencing file -> defining file with weight
-	for symbol, refMap := range references {
-		defFiles := defines[symbol]
-		if len(defFiles) == 0 {
-			continue
-		}
-
-		var mul float64
-		switch {
-		case mentionedIdents[symbol]:
-			mul = 10.0
-		case strings.HasPrefix(symbol, "_"):
-			mul = 0.1
-		default:
-			mul = 1.0
-		}
-
-		for refFile, numRefs := range refMap {
-			// log.Trace().Msg(color.YellowString("refFile: %s, numRefs: %d"), refFile, numRefs))
-			w := mul * math.Sqrt(float64(numRefs))
-			for defFile := range defFiles {
-				// If refFile == defFile, decide if you skip or not
-				if refFile == defFile {
-					continue
-				}
-				refNode := nodeByFile[refFile]
-				defNode := nodeByFile[defFile]
-
-				// Create a weighted edge
-				edge := g.NewWeightedLine(refNode, defNode, w)
-				g.SetWeightedLine(edge)
-			}
-		}
-	}
+	//--------------------------------------------------------
+	// 2) Construct a multi-directed graph
+	//--------------------------------------------------------
+	g, nodeByFile, fileSet := r.buildFileGraph(defines, references, identifiers, mentionedIdents)
 
 	// 4) Personalization
 	personal := make(map[int64]float64)
@@ -515,62 +448,22 @@ func (r *RepoMap) getRankedTagsByPageRank(allTags []Tag, mentionedFnames, mentio
 	// fmt.Println("PageRank results:")
 	// PrintStructOut(pr)
 
-	// 6) Distribute rank from each src node across its out edges
-	edgeRanks := make(map[struct {
-		dst    string
-		symbol string
-	}]float64)
+	//--------------------------------------------------------
+	// 3) Distribute each file’s rank across its out-edges
+	//--------------------------------------------------------
+	edgeRanks := distributeRank(pr, defines, references, nodeByFile, mentionedIdents)
 
-	for symbol, refMap := range references {
-		defFiles := defines[symbol]
-		if defFiles == nil {
-			continue
-		}
-
-		var mul float64
-		switch {
-		case mentionedIdents[symbol]:
-			mul = 10.0
-		case strings.HasPrefix(symbol, "_"):
-			mul = 0.1
-		default:
-			mul = 1.0
-		}
-
-		for refFile, numRefs := range refMap {
-			w := mul * math.Sqrt(float64(numRefs))
-			sumW := float64(len(defFiles)) * w // If each defFile gets w from refFile
-
-			srcRank := pr[nodeByFile[refFile].ID()]
-			if sumW == 0 {
-				continue
-			}
-			for defFile := range defFiles {
-				portion := srcRank * (w / sumW)
-				edgeRanks[struct {
-					dst    string
-					symbol string
-				}{dst: defFile, symbol: symbol}] += portion
-			}
-		}
-	}
-
-	// 7) Convert to sorted list
-	type defRank struct {
-		fname  string
-		symbol string
-		rank   float64
-	}
-
-	var defRankSlice []defRank
+	fmt.Printf("\n\n## Ranked defs:")
 	for k, v := range edgeRanks {
-		defRankSlice = append(defRankSlice, defRank{
-			fname:  k.dst,
-			symbol: k.symbol,
-			rank:   v,
-		})
+		fmt.Printf("\n- %s: %v", k, v)
 	}
 
+	//--------------------------------------------------------
+	// 4) Convert edge-based rank to a sorted list
+	//--------------------------------------------------------
+	defRankSlice := toDefRankSlice(edgeRanks)
+
+	// 8) Sort by rank, then by fname, then by symbol
 	sort.Slice(defRankSlice, func(i, j int) bool {
 		if defRankSlice[i].rank != defRankSlice[j].rank {
 			return defRankSlice[i].rank > defRankSlice[j].rank
@@ -590,6 +483,16 @@ func (r *RepoMap) getRankedTagsByPageRank(allTags []Tag, mentionedFnames, mentio
 		}
 	*/
 
+	fmt.Printf("\n\n## Ranked defs (SORTED):")
+	for _, v := range defRankSlice {
+		fmt.Printf("\n- %v / %s / %s", v.rank, v.fname, v.symbol)
+	}
+
+	fmt.Printf("\n\n")
+
+	//--------------------------------------------------------
+	// 5) Gather final tags, skipping chat files if desired
+	//--------------------------------------------------------
 	var rankedTags []Tag
 	for _, dr := range defRankSlice {
 		if chatRelFnames[dr.fname] {
@@ -602,6 +505,250 @@ func (r *RepoMap) getRankedTagsByPageRank(allTags []Tag, mentionedFnames, mentio
 
 	// Possibly append files that have no tags, etc.
 	return rankedTags
+}
+
+// edgeData is a small struct to hold adjacency info for distributing rank
+type edgeData struct {
+	dstFile string
+	symbol  string
+	weight  float64
+}
+
+type EdgeRank struct {
+	dst    string
+	symbol string
+}
+
+type DefRank struct {
+	fname  string
+	symbol string
+	rank   float64
+}
+
+// toDefRankSlice converts the map[EdgeRank]rank into a slice for sorting
+func toDefRankSlice(edgeRanks map[EdgeRank]float64) []DefRank {
+	defRankSlice := make([]DefRank, 0, len(edgeRanks))
+	for k, v := range edgeRanks {
+		defRankSlice = append(defRankSlice, DefRank{
+			fname:  k.dst,
+			symbol: k.symbol,
+			rank:   v,
+		})
+	}
+	return defRankSlice
+}
+
+// distributeRank inspects each node's PageRank, sums the weights of all its out-edges,
+// and then distributes that node's rank proportionally along those edges.
+// The result is a mapping (defFile, symbol) -> rank. This parallels:
+//
+//	for src in G.nodes:
+//	    srcRank = ranked[src]
+//	    totalWeight = sum of out-edge weights
+//	    for edge in out-edges:
+//	        portion = srcRank * (edgeWeight / totalWeight)
+//	        ranked_definitions[(edge.target, edge.symbol)] += portion
+func distributeRank(
+	pr map[int64]float64,
+	defines map[string]map[string]struct{},
+	references map[string][]string,
+	nodeByFile map[string]graph.Node,
+	mentionedIdents map[string]bool,
+) map[EdgeRank]float64 {
+
+	// 6) Distribute rank from each src node across its out edges
+	edgeRanks := make(map[EdgeRank]float64)
+
+	for symbol, refMap := range references {
+		defFiles := defines[symbol]
+		if defFiles == nil {
+			continue
+		}
+
+		// // ndelorme - ranked tags
+		// fmt.Println("\n\nRanked tags:")
+		// for _, t := range rankedTags {
+		// 	fmt.Printf("- %s / %d / %s\n", t.Kind, t.Line, t.Name)
+		// }
+
+		var mul float64
+		switch {
+		case mentionedIdents[symbol]:
+			mul = 10.0
+		case strings.HasPrefix(symbol, "_"):
+			mul = 0.1
+		default:
+			mul = 1.0
+		}
+
+		for _, refFile := range refMap {
+			w := mul * math.Sqrt(float64(len(refMap)))
+			sumW := float64(len(defFiles)) * w // If each defFile gets w from refFile
+
+			srcRank := pr[nodeByFile[refFile].ID()]
+			if sumW == 0 {
+				continue
+			}
+			for defFile := range defFiles {
+				portion := srcRank * (w / sumW)
+				edgeRanks[struct {
+					dst    string
+					symbol string
+				}{dst: defFile, symbol: symbol}] += portion
+			}
+		}
+	}
+
+	return edgeRanks
+}
+
+// buildFileGraph scans the union of (defines, references) to find all unique filenames
+// and create a node for each. The return is a MultiDirectedGraph plus a lookup map to
+// find that node by filename.
+func (r *RepoMap) buildFileGraph(
+	defines map[string]map[string]struct{},
+	references map[string][]string,
+	identifiers map[string]bool,
+	mentionedIdents map[string]bool,
+) (
+	g *multi.WeightedDirectedGraph,
+	nodeByFile map[string]graph.Node,
+	fileSet map[string]struct{},
+) {
+	// 2) Build a multi directed graph
+	g = multi.NewWeightedDirectedGraph()
+
+	// Keep track of the node ID for each rel_fname
+	nodeByFile = make(map[string]graph.Node)
+
+	// Gather all relevant filenames
+	fileSet = make(map[string]struct{})
+	for _, defFiles := range defines {
+		for f := range defFiles {
+			fileSet[f] = struct{}{}
+		}
+	}
+	for _, refMap := range references {
+		for _, f := range refMap {
+			fileSet[f] = struct{}{}
+		}
+	}
+
+	// Create node for each file
+	for f := range fileSet {
+		n := g.NewNode()
+		g.AddNode(n)
+		nodeByFile[f] = n
+	}
+
+	fmt.Printf("\n\nNumber of nodes (files): %d\n", g.Nodes().Len())
+
+	// 3) For each ident, link referencing file -> defining file with weight
+	for ident, _ := range identifiers {
+		defFiles := defines[ident]
+		if len(defFiles) == 0 {
+			continue
+		}
+
+		var mul float64
+		switch {
+		case mentionedIdents[ident]:
+			mul = 10.0
+		case strings.HasPrefix(ident, "_"):
+			mul = 0.1
+		default:
+			mul = 1.0
+		}
+
+		for _, refFile := range references[ident] {
+			// log.Trace().Msg(color.YellowString("refFile: %s, numRefs: %d"), refFile, numRefs))
+			w := mul * math.Sqrt(float64(len(references[ident])))
+			for defFile := range defFiles {
+				refNode := nodeByFile[refFile]
+				defNode := nodeByFile[defFile]
+
+				// Create a weighted edge
+				edge := g.NewWeightedLine(refNode, defNode, w)
+				g.SetWeightedLine(edge)
+			}
+		}
+	}
+
+	return g, nodeByFile, fileSet
+}
+
+// buildReferenceMaps reads a slice of Tag objects and partitions them into
+// (symbol -> set of files that define it) and (symbol -> map[file] countOfRefs).
+// It also tracks the actual definition Tag objects for (file,symbol).
+func (r *RepoMap) buildReferenceMaps(allTags []Tag) (
+	defines map[string]map[string]struct{}, // symbol -> set{relFname}
+	references map[string][]string, // symbol -> map[relFname] -> # of references
+	definitions map[tagKey][]Tag, // (relFname, symbol) -> slices of definition tags
+	identifiers map[string]bool, // set of symbols that have both defines and references
+) {
+	// 1) Collect references, definitions
+	// defines is a set of filenames that define a symbol
+	defines = make(map[string]map[string]struct{}) // symbol -> set of filenames that define it
+	// references is a list of files per symbol
+	references = make(map[string][]string) // symbol -> map of (referencerFile -> countOfRefs)
+	// definitions is a set of symbols (tags) including file where they are defined
+	definitions = make(map[tagKey][]Tag) // (fname, symbol) -> slice of definition Tags
+
+	for _, t := range allTags {
+		rel := r.GetRelFname(t.FilePath)
+
+		switch t.Kind {
+		case TagKindDef:
+			if defines[t.Name] == nil {
+				defines[t.Name] = make(map[string]struct{})
+			}
+			defines[t.Name][rel] = struct{}{}
+
+			k := tagKey{fname: rel, symbol: t.Name}
+			definitions[k] = append(definitions[k], t)
+
+		case TagKindRef:
+			// if references[t.Name] == nil {
+			// 	references[t.Name] = map[string][]string{t.FileName: {rel}}
+			// }
+			references[t.Name] = append(references[t.Name], rel)
+		}
+	}
+
+	// If references is empty, fall back to references=defines
+	// this code is needed as page rank will not work if references is empty
+	if len(references) == 0 {
+		for sym, defFiles := range defines {
+			for df := range defFiles {
+				references[sym] = append(references[sym], df)
+			}
+		}
+	}
+
+	// idents = set(defines.keys()).intersection(set(references.keys()))
+	//
+	identifiers = make(map[string]bool)
+	for sym := range defines {
+		if _, ok := references[sym]; ok {
+			identifiers[sym] = true
+		}
+	}
+
+	return defines, references, definitions, identifiers
+}
+
+// fallbackReferences is used when no references are found. Python code sets references = defines,
+// effectively giving each symbol a trivial reference from its own definer.
+func (r *RepoMap) fallbackReferences(defines map[string]map[string]struct{}) map[string]map[string]int {
+	refs := make(map[string]map[string]int)
+	for sym, defFiles := range defines {
+		refs[sym] = make(map[string]int)
+		for df := range defFiles {
+			// Just increment by 1 to indicate a trivial reference from the def file to itself
+			refs[sym][df]++
+		}
+	}
+	return refs
 }
 
 // GetRankedTagsMap orchestrates calls to getRankedTags and toTree to produce the final “map” string.
@@ -617,11 +764,29 @@ func (r *RepoMap) GetRankedTagsMap(
 	// Combine chatFnames and otherFnames into a map of unique elements
 	allFnames := uniqueElements(chatFnames, otherFnames)
 
+	// ndelorme - file list
+	// fmt.Println("## files:")
+	// for _, f := range allFnames {
+	// 	fmt.Printf("- %s\n", f)
+	// }
+
 	// Collect all tags from those files
 	allTags := r.getTagsFromFiles(allFnames, commonWords)
 
+	// // ndelorme - all tags
+	// fmt.Println("All tags:")
+	// for _, t := range allTags {
+	// 	fmt.Printf("- %s / %d / %s\n", t.Kind, t.Line, t.Name)
+	// }
+
 	// Get ranked tags by PageRank
 	rankedTags := r.getRankedTagsByPageRank(allTags, mentionedFnames, mentionedIdents)
+
+	// // ndelorme - ranked tags
+	// fmt.Println("\n\nRanked tags:")
+	// for _, t := range rankedTags {
+	// 	fmt.Printf("- %s / %d / %s\n", t.Kind, t.Line, t.Name)
+	// }
 
 	// tr@ck
 	topFive := 5
@@ -742,8 +907,6 @@ func (r *RepoMap) GetRepoMap(
 	if filesListing == "" {
 		return ""
 	}
-
-	// fmt.Println(filesListing)
 
 	if r.Verbose {
 		numTokens := r.TokenCount(filesListing)

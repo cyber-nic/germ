@@ -137,6 +137,7 @@ func main() {
 		return
 	}
 
+	fmt.Println("## Main")
 	fmt.Println(repoMapOutput)
 }
 

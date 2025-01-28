@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -317,75 +318,77 @@ func TestGetSourceCodeMapQuery(t *testing.T) {
 	}
 }
 
-// TestGetTagsFromQueryCapture_EmptySource verifies that providing an empty
-// source code snippet returns no tags.
-func TestGetTagsFromQueryCapture_EmptySource(t *testing.T) {
-	// An empty source code snippet
-	sourceCode := []byte("package main")
+func TestGetTagsFromQueryCapture(t *testing.T) {
+	// EmptySource verifies that providing an empty
+	// source code snippet returns no tags.
+	t.Run("EmptySource", func(t *testing.T) {
 
-	// Create a language object
-	lang := sitter.NewLanguage(sitter_go.Language())
+		// An empty source code snippet
+		sourceCode := []byte("package main")
 
-	// Get source code CST
-	parser := sitter.NewParser()
-	parser.SetLanguage(lang)
-	tree := parser.Parse(sourceCode, nil)
+		// Create a language object
+		lang := sitter.NewLanguage(sitter_go.Language())
 
-	// Use a trivial, empty query. This won't match anything.
-	q, err := sitter.NewQuery(lang, "")
-	if err != nil {
-		t.Fatalf("Failed to create an empty query: %v", err)
-	}
+		// Get source code CST
+		parser := sitter.NewParser()
+		parser.SetLanguage(lang)
+		tree := parser.Parse(sourceCode, nil)
 
-	// Invoke the function under test
-	tags := GetTagsFromQueryCapture("rel/path.go", "/absolute/path.go", q, tree, sourceCode, nil)
+		// Use a trivial, empty query. This won't match anything.
+		q, err := sitter.NewQuery(lang, "")
+		if err != nil {
+			t.Fatalf("Failed to create an empty query: %v", err)
+		}
 
-	// We expect no tags
-	assert.Empty(t, tags, "Expected no tags for empty source code")
-}
+		// Invoke the function under test
+		tags := GetTagsFromQueryCapture("rel/path.go", "/absolute/path.go", q, tree, sourceCode, nil)
 
-// TestGetTagsFromQueryCapture_SimpleDef simulates a scenario with a minimal
-// snippet containing a single "definition-like" capture.
-func TestGetTagsFromQueryCapture_SimpleDef(t *testing.T) {
-	// Fake snippet that could trigger a "definition" capture in an actual grammar.
-	sourceCode := []byte("package main; func Hello() {}")
+		// We expect no tags
+		assert.Empty(t, tags, "Expected no tags for empty source code")
+	})
 
-	// Create a language object
-	lang := sitter.NewLanguage(sitter_go.Language())
+	// SimpleDef simulates a scenario with a minimal
+	// snippet containing a single "definition-like" capture.
+	t.Run("SimpleDef", func(t *testing.T) {
+		// Fake snippet that could trigger a "definition" capture in an actual grammar.
+		sourceCode := []byte("package main; func Hello() {}")
 
-	// Get source code CST
-	parser := sitter.NewParser()
-	parser.SetLanguage(lang)
-	tree := parser.Parse(sourceCode, nil)
+		// Create a language object
+		lang := sitter.NewLanguage(sitter_go.Language())
 
-	// go function definition query
-	query := `
+		// Get source code CST
+		parser := sitter.NewParser()
+		parser.SetLanguage(lang)
+		tree := parser.Parse(sourceCode, nil)
+
+		// go function definition query
+		query := `
 	(
 	  (function_declaration name: (identifier) @name.definition.function) @definition.function
 	)
 	`
-	// Create the query
-	q, err := sitter.NewQuery(lang, query)
-	if err != nil {
-		t.Fatalf("Failed to create query: %v", err)
-	}
+		// Create the query
+		q, err := sitter.NewQuery(lang, query)
+		if err != nil {
+			t.Fatalf("Failed to create query: %v", err)
+		}
 
-	// Call the function we want to test
-	tags := GetTagsFromQueryCapture("rel/path.go", "/absolute/path.go", q, tree, sourceCode, nil)
+		// Call the function we want to test
+		tags := GetTagsFromQueryCapture("rel/path.go", "/absolute/path.go", q, tree, sourceCode, nil)
 
-	// Example: we expect exactly one definition. Adjust to reality once
-	// your parser/query code is set up.
-	assert.Len(t, tags, 1, "Expected exactly one definition capture")
-	assert.Equal(t, TagKindDef, tags[0].Kind, "Expected the capture to be recognized as a definition")
-	// Hypothetical name check
-	assert.Equal(t, "Hello", tags[0].Name, "Expected the function name to match 'Hello'")
-}
+		// Example: we expect exactly one definition. Adjust to reality once
+		// your parser/query code is set up.
+		assert.Len(t, tags, 1, "Expected exactly one definition capture")
+		assert.Equal(t, TagKindDef, tags[0].Kind, "Expected the capture to be recognized as a definition")
+		// Hypothetical name check
+		assert.Equal(t, "Hello", tags[0].Name, "Expected the function name to match 'Hello'")
+	})
 
-// TestGetTagsFromQueryCapture_SimpleRef simulates a scenario with a snippet
-// containing a single "reference-like" capture.
-func TestGetTagsFromQueryCapture_SimpleRef(t *testing.T) {
-	// Fake snippet that might trigger a "reference" capture (function call, etc.).
-	sourceCode := []byte(`
+	// SimpleRef simulates a scenario with a snippet
+	// containing a single "reference-like" capture.
+	t.Run("SimpleRef", func(t *testing.T) {
+		// Fake snippet that might trigger a "reference" capture (function call, etc.).
+		sourceCode := []byte(`
 	import "fmt"
 
 	func hello() {
@@ -398,30 +401,155 @@ func TestGetTagsFromQueryCapture_SimpleRef(t *testing.T) {
 	}
 	`)
 
-	// Create a language object
-	lang := sitter.NewLanguage(sitter_go.Language())
+		// Create a language object
+		lang := sitter.NewLanguage(sitter_go.Language())
 
-	// Get source code CST
-	parser := sitter.NewParser()
-	parser.SetLanguage(lang)
-	tree := parser.Parse(sourceCode, nil)
+		// Get source code CST
+		parser := sitter.NewParser()
+		parser.SetLanguage(lang)
+		tree := parser.Parse(sourceCode, nil)
 
-	// call expression query
-	query := `
+		// call expression query
+		query := `
 	(
 	  (call_expression function: (identifier) @name.reference.call) @reference.call
 	)
 	`
-	q, err := sitter.NewQuery(lang, query)
-	if err != nil {
-		t.Fatalf("Failed to create query: %v", err)
-	}
+		q, err := sitter.NewQuery(lang, query)
+		if err != nil {
+			t.Fatalf("Failed to create query: %v", err)
+		}
 
-	// Invoke the function
-	tags := GetTagsFromQueryCapture("rel/path.go", "/absolute/path.go", q, tree, sourceCode, nil)
+		// Invoke the function
+		tags := GetTagsFromQueryCapture("rel/path.go", "/absolute/path.go", q, tree, sourceCode, nil)
 
-	assert.Len(t, tags, 2, "Expected exactly one reference capture")
-	assert.Equal(t, TagKindRef, tags[0].Kind, "Expected the capture to be recognized as a reference")
-	assert.True(t, strings.Contains(tags[0].Name, "hello"), "Expected reference to contain 'hello'")
-	assert.Equal(t, tags[1].Line, 9, "Expected reference to be on line 9")
+		assert.Len(t, tags, 2, "Expected exactly one reference capture")
+		assert.Equal(t, TagKindRef, tags[0].Kind, "Expected the capture to be recognized as a reference")
+		assert.True(t, strings.Contains(tags[0].Name, "hello"), "Expected reference to contain 'hello'")
+		assert.Equal(t, tags[1].Line, 9, "Expected reference to be on line 9")
+	})
+}
+
+// TestGetRankedTagsByPageRank contains multiple sub-tests demonstrating how you might
+// set up scenarios and verify outcomes. Each sub-test defines a small collection of
+// tags, “mentioned” data, and checks the ranked output.
+func TestGetRankedTagsByPageRank(t *testing.T) {
+
+	t.Run("NoReferencesFallback", func(t *testing.T) {
+		// This scenario has definitions but no references. We expect the fallback
+		// behavior to treat defines as references, effectively giving minimal ranking.
+		r := &RepoMap{}
+
+		allTags := []Tag{
+			{"FileA.go", "path/to/FileA.go", 10, "Foo", TagKindDef},
+			{"FileB.go", "path/to/FileB.go", 20, "Bar", TagKindDef},
+		}
+
+		mentionedFnames := map[string]bool{}
+		mentionedIdents := map[string]bool{}
+
+		ranked := r.getRankedTagsByPageRank(allTags, mentionedFnames, mentionedIdents)
+
+		// In fallback mode, references=defines, so each file "references" itself.
+		// Because the Go code currently discards self-edges, you might end up with
+		// no edges. The PageRank for each file could be near-equal. We just check
+		// that we got back the definitions in some order.
+		if len(ranked) != 2 {
+			t.Errorf("Expected 2 tags, got %d", len(ranked))
+		}
+
+		// debug
+		// for i, tg := range ranked {
+		// 	fmt.Printf("Ranked[%d]: file=%s, symbol=%s\n", i, tg.FilePath, tg.Name)
+		// }
+
+		assert.Equal(t, "path/to/FileA.go", ranked[0].FilePath, "Expected FileA.go to be ranked first")
+		assert.Equal(t, "path/to/FileB.go", ranked[1].FilePath, "Expected FileB.go to be ranked second")
+	})
+
+	t.Run("SingleRef", func(t *testing.T) {
+		// Scenario: FileA defines "Foo", FileB references "Foo" once.
+		r := &RepoMap{}
+
+		allTags := []Tag{
+			{"FileA.go", "path/to/FileA.go", 10, "Foo", TagKindDef},
+			{"FileB.go", "path/to/FileB.go", 20, "Foo", TagKindRef},
+		}
+
+		// Nothing “mentioned” in chat
+		mentionedFnames := map[string]bool{}
+		mentionedIdents := map[string]bool{}
+
+		ranked := r.getRankedTagsByPageRank(allTags, mentionedFnames, mentionedIdents)
+
+		// We expect the top-ranked definition to be (FileA, "Foo").
+		// Currently, the code will produce at least one ranked definition from FileA.
+		if len(ranked) == 0 {
+			t.Errorf("Expected at least one ranked definition, got 0")
+			return
+		}
+		// The top entry should be the definition from FileA
+		top := ranked[0]
+		if top.FilePath != "path/to/FileA.go" || top.Name != "Foo" {
+			t.Errorf("Top definition mismatch: got (file=%s, name=%s), want (FileA.go, Foo)",
+				top.FilePath, top.Name)
+		}
+	})
+
+	t.Run("MentionedSymbolBoost", func(t *testing.T) {
+		// Scenario: Two definitions of "Foo" in FileA and FileB.
+		// FileC references "Foo" once. "Foo" is also in mentionedIdents,
+		// so it should get a bigger weight.
+		r := &RepoMap{}
+
+		allTags := []Tag{
+			{"FileA.go", "path/to/FileA.go", 10, "Foo", TagKindDef},
+			{"FileB.go", "path/to/FileB.go", 20, "Foo", TagKindDef},
+			{"FileC.go", "path/to/FileC.go", 30, "Foo", TagKindRef},
+		}
+
+		mentionedFnames := map[string]bool{
+			// Suppose "path/to/FileC.go" is mentioned in chat
+			"path/to/FileC.go": true,
+		}
+		mentionedIdents := map[string]bool{
+			// Also the symbol "Foo" is “mentioned” in chat
+			"Foo": true,
+		}
+
+		ranked := r.getRankedTagsByPageRank(allTags, mentionedFnames, mentionedIdents)
+		if len(ranked) < 2 {
+			t.Errorf("Expected at least 2 ranked definitions, got %d", len(ranked))
+		}
+
+		// Sort the result by file path for stable test output,
+		// then check rank positions or at least existence.
+		// (If you rely on the "rank" ordering from getRankedTagsByPageRank,
+		//  you can just check the first or second item.)
+		sorted := append([]Tag(nil), ranked...)
+		sort.Slice(sorted, func(i, j int) bool {
+			return sorted[i].FilePath < sorted[j].FilePath
+		})
+
+		// We expect to see definitions from FileA.go and FileB.go, both for "Foo".
+		// Let's just check presence:
+		foundA, foundB := false, false
+		for _, tg := range sorted {
+			if tg.FilePath == "path/to/FileA.go" && tg.Name == "Foo" {
+				foundA = true
+			}
+			if tg.FilePath == "path/to/FileB.go" && tg.Name == "Foo" {
+				foundB = true
+			}
+		}
+
+		if !foundA || !foundB {
+			t.Errorf("Expected definitions (FileA, Foo) and (FileB, Foo) in results. FoundA=%v, FoundB=%v",
+				foundA, foundB)
+		}
+
+		// Ideally also verify *relative ordering* or rank values
+		// if you can reliably predict them. But PageRank algorithms can produce
+		// small variations in floating-point results.
+	})
 }

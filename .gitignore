@@ -1,5 +1,6 @@
 # generally, ignore hidden artifacts
 .*
+!.gitignore
 
 # git
 .git/
