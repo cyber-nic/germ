@@ -399,22 +399,24 @@ func (r *RepoMap) getRankedTagsByPageRank(allTags []Tag, mentionedFnames, mentio
 	//--------------------------------------------------------
 	defines, references, definitions, identifiers := r.buildReferenceMaps(allTags)
 
-	// ndelorme
-	fmt.Printf("\n\n## defines:")
-	for k, v := range defines {
-		fmt.Printf("\n- %s: %v", k, v)
-	}
-	fmt.Printf("\n\n## definitions:")
-	for k, v := range definitions {
-		fmt.Printf("\n- %s: %v", k, v)
-	}
-	fmt.Printf("\n\n## references:")
-	for k, v := range references {
-		fmt.Printf("\n- %s: %v", k, v)
-	}
-	fmt.Printf("\n\n## idents:")
-	for k := range identifiers {
-		fmt.Printf("\n- %s", k)
+	if r.Verbose {
+		// ndelorme
+		fmt.Printf("\n\n## defines:")
+		for k, v := range defines {
+			fmt.Printf("\n- %s: %v", k, v)
+		}
+		fmt.Printf("\n\n## definitions:")
+		for k, v := range definitions {
+			fmt.Printf("\n- %s: %v", k, v)
+		}
+		fmt.Printf("\n\n## references:")
+		for k, v := range references {
+			fmt.Printf("\n- %s: %v", k, v)
+		}
+		fmt.Printf("\n\n## idents:")
+		for k := range identifiers {
+			fmt.Printf("\n- %s", k)
+		}
 	}
 
 	//--------------------------------------------------------
@@ -454,8 +456,8 @@ func (r *RepoMap) getRankedTagsByPageRank(allTags []Tag, mentionedFnames, mentio
 	edgeRanks := distributeRank(pr, defines, references, nodeByFile, mentionedIdents)
 
 	fmt.Printf("\n\n## Ranked defs:")
-	for k, v := range edgeRanks {
-		fmt.Printf("\n- %s: %v", k, v)
+	for edge, rank := range edgeRanks {
+		fmt.Printf("\n- %v / %s / %s", rank, edge.dst, edge.symbol)
 	}
 
 	//--------------------------------------------------------

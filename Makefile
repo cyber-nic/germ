@@ -13,4 +13,4 @@ demo:
 
 aider:
 	rm -rf ./.aider.tags.cache.v3
-	PYTHONPATH=/code/aider python3 -m aider.main --show-repo-map > aider.map
+	PIP_DISABLE_PIP_VERSION_CHECK=1 PYTHONPATH=/code/aider python3 -m aider.main --show-repo-map > aider.map
