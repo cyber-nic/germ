@@ -3,7 +3,6 @@ package orb
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -27,160 +26,6 @@ func TestNewRepoMap(t *testing.T) {
 	)
 	if rm == nil {
 		t.Fatalf("Expected NewRepoMap to return a non-nil RepoMap")
-	}
-}
-
-// // TestGetRepoMap tests the GetRepoMap method of the RepoMap struct.
-// func TestGetRepoMap(t *testing.T) {
-// 	tmpDir, err := os.MkdirTemp("", "repomap-test-*")
-// 	if err != nil {
-// 		t.Fatalf("Failed to create temp dir: %v", err)
-// 	}
-// 	defer os.RemoveAll(tmpDir)
-
-// 	// Create two sample files: one for chat, one for "other"
-// 	chatFile := filepath.Join(tmpDir, "test_chat.go")
-// 	otherFile := filepath.Join(tmpDir, "test_other.go")
-
-// 	err = os.WriteFile(chatFile, []byte(`package main
-
-// func ChatFunc() {
-//     // chat code
-// }`), 0600)
-// 	if err != nil {
-// 		t.Fatalf("Failed to create chatFile: %v", err)
-// 	}
-
-// 	err = os.WriteFile(otherFile, []byte(`package main
-
-// func OtherFunc() {
-//     // other code
-// }`), 0600)
-// 	if err != nil {
-// 		t.Fatalf("Failed to create otherFile: %v", err)
-// 	}
-
-// 	rm := NewRepoMap(
-// 		1024,
-// 		tmpDir,
-// 		&ModelStub{},
-// 		"",
-// 		false,
-// 		16000,
-// 		8,
-// 		"auto",
-// 	)
-
-// 	chatFiles := []string{chatFile}
-// 	repoFiles := []string{otherFile}
-// 	mentionedFnames := map[string]bool{}
-// 	mentionedIdents := map[string]bool{}
-// 	forceRefresh := false
-
-// 	repoMapText := rm.GetRepoMap(chatFiles, repoFiles, mentionedFnames, mentionedIdents, forceRefresh)
-// 	if len(repoMapText) == 0 {
-// 		t.Errorf("Expected GetRepoMap to return non-empty text, got empty string")
-// 	}
-// }
-
-// // TestGetRankedTagsMap tests the GetRankedTagsMap method of the RepoMap struct.
-// func TestGetRankedTagsMap(t *testing.T) {
-// 	tmpDir, err := os.MkdirTemp("", "repomap-test-*")
-// 	if err != nil {
-// 		t.Fatalf("Failed to create temp dir: %v", err)
-// 	}
-// 	defer os.RemoveAll(tmpDir)
-
-// 	fileA := filepath.Join(tmpDir, "a.go")
-// 	contentA := `package main
-
-// func A() {
-//     // some code
-// }
-// `
-// 	if err := os.WriteFile(fileA, []byte(contentA), 0600); err != nil {
-// 		t.Fatalf("Failed to create fileA: %v", err)
-// 	}
-
-// 	fileB := filepath.Join(tmpDir, "b.go")
-// 	contentB := `package main
-
-// func B() {
-//     // some other code
-// }
-// `
-// 	if err := os.WriteFile(fileB, []byte(contentB), 0600); err != nil {
-// 		t.Fatalf("Failed to create fileB: %v", err)
-// 	}
-
-// 	rm := NewRepoMap(
-// 		1024,
-// 		tmpDir,
-// 		&ModelStub{},
-// 		"",
-// 		false,
-// 		16000,
-// 		8,
-// 		"auto",
-// 	)
-
-// 	chatFiles := []string{fileA}
-// 	otherFiles := []string{fileB}
-// 	mentionedFnames := map[string]bool{}
-// 	mentionedIdents := map[string]bool{}
-// 	forceRefresh := false
-
-// 	rankedMap := rm.GetRankedTagsMap(chatFiles, otherFiles, 1024, mentionedFnames, mentionedIdents, forceRefresh)
-// 	if len(rankedMap) == 0 {
-// 		t.Errorf("Expected GetRankedTagsMap to return non-empty text, got empty string")
-// 	}
-// }
-
-// TestRenderTree tests the renderTree method of the RepoMap struct.
-func TestRenderTree(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "repomap-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	sampleFile := filepath.Join(tmpDir, "demo.go")
-	// This file has 5 lines total (0..4), so note the line indexes carefully:
-	// Line 0: package main
-	// Line 1:
-	// Line 2: func Demo() {
-	// Line 3:     // Some line of code
-	// Line 4: }
-	err = os.WriteFile(sampleFile, []byte(`package main
-
-func Demo() {
-    // Some line of code
-}
-`), 0600)
-	if err != nil {
-		t.Fatalf("Failed to create sample file: %v", err)
-	}
-
-	rm := NewRepoMap(
-		1024,
-		tmpDir,
-		&ModelStub{},
-		"",
-		false,
-		16000,
-		8,
-		"auto",
-	)
-
-	// If we want to see the line "// Some line of code," that's on line 3 (0-based).
-	linesOfInterest := []int{2, 3}
-	rendered, _ := rm.renderTree(sampleFile, "demo.go", linesOfInterest)
-
-	if !strings.Contains(rendered, "func Demo()") {
-		t.Errorf("Expected snippet to contain 'func Demo()', got:\n%s", rendered)
-	}
-	if !strings.Contains(rendered, "Some line of code") {
-		t.Errorf("Expected snippet to contain 'Some line of code', got:\n%s", rendered)
 	}
 }
 
@@ -551,5 +396,99 @@ func TestGetRankedTagsByPageRank(t *testing.T) {
 		// Ideally also verify *relative ordering* or rank values
 		// if you can reliably predict them. But PageRank algorithms can produce
 		// small variations in floating-point results.
+	})
+}
+
+// TestRenderTree tests the renderTree method of the RepoMap struct.
+// Now that renderTree takes (relFname, code []byte, linesOfInterest []int),
+//
+//	func (r *RepoMap) renderTree(
+//	    relFname string,
+//	    code []byte,
+//	    linesOfInterest []int,
+//	) (string, error)
+//
+// we can pass inline code for testing rather than reading from an actual file.
+func TestRenderTree(t *testing.T) {
+	// 1) Basic sample code with 5 lines total (index 0..4).
+	// We'll verify lines of interest 2 and 3 are displayed in the snippet.
+	code := []byte(`package main
+
+func Demo() {
+    // Some line of code
+}
+`)
+
+	rm := NewRepoMap(
+		1024,
+		".",
+		nil, // e.g., &ModelStub{}, or whatever your code expects
+		"",
+		false,
+		16000,
+		8,
+		"auto",
+	)
+
+	// If we want to see lines 2 and 3:
+	//   line 2 => "func Demo() {"
+	//   line 3 => "    // Some line of code"
+	linesOfInterest := []int{2, 3}
+	rendered, err := rm.renderTree("demo.go", code, linesOfInterest)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if !strings.Contains(rendered, "func Demo()") {
+		t.Errorf("Expected snippet to contain 'func Demo()', got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Some line of code") {
+		t.Errorf("Expected snippet to contain 'Some line of code', got:\n%s", rendered)
+	}
+
+	// 2) No lines of interest -> likely returns empty or minimal snippet.
+	t.Run("NoLinesOfInterest", func(t *testing.T) {
+		rendered, err := rm.renderTree("demo.go", code, nil)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+		if rendered == "" {
+			t.Log("Got empty snippet as expected with no lines of interest.")
+		} else {
+			t.Logf("Snippet returned some content: %q", rendered)
+		}
+	})
+
+	// 3) Additional sample with multiline function to test “child context” or expansions.
+	// If your grep-ast library now handles child contexts, you can add a bigger snippet.
+	bigCode := []byte(`package main
+
+	func AnotherDemo() {
+	    // line 2
+	    if true {
+	        // line 4
+	        println("Inside if")
+	    }
+	    // line 7
+	}
+	`)
+
+	t.Run("MultiLineFunction", func(t *testing.T) {
+		// Let’s highlight the if-statement line (4) and see if we get line 5 as well.
+		linesOfInterest := []int{4}
+		rendered, err := rm.renderTree("another.go", bigCode, linesOfInterest)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+
+		fmt.Println(rendered)
+
+		// Confirm the snippet has at least line 4 and line 5.
+		if !strings.Contains(rendered, "// line 4") {
+			t.Errorf("Snippet missing '// line 4'. Got:\n%s", rendered)
+		}
+		if !strings.Contains(rendered, `println("Inside if")`) {
+			t.Errorf("Snippet missing 'println(\"Inside if\")'. Got:\n%s", rendered)
+		}
 	})
 }

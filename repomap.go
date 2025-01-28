@@ -455,9 +455,11 @@ func (r *RepoMap) getRankedTagsByPageRank(allTags []Tag, mentionedFnames, mentio
 	//--------------------------------------------------------
 	edgeRanks := distributeRank(pr, defines, references, nodeByFile, mentionedIdents)
 
-	fmt.Printf("\n\n## Ranked defs:")
-	for edge, rank := range edgeRanks {
-		fmt.Printf("\n- %v / %s / %s", rank, edge.dst, edge.symbol)
+	if r.Verbose {
+		fmt.Printf("\n\n## Ranked defs:")
+		for edge, rank := range edgeRanks {
+			fmt.Printf("\n- %v / %s / %s", rank, edge.dst, edge.symbol)
+		}
 	}
 
 	//--------------------------------------------------------
@@ -484,13 +486,14 @@ func (r *RepoMap) getRankedTagsByPageRank(allTags []Tag, mentionedFnames, mentio
 			chatRelFnames[rel] = true
 		}
 	*/
+	if r.Verbose {
+		fmt.Printf("\n\n## Ranked defs (SORTED):")
+		for _, v := range defRankSlice {
+			fmt.Printf("\n- %v / %s / %s", v.rank, v.fname, v.symbol)
+		}
 
-	fmt.Printf("\n\n## Ranked defs (SORTED):")
-	for _, v := range defRankSlice {
-		fmt.Printf("\n- %v / %s / %s", v.rank, v.fname, v.symbol)
+		fmt.Printf("\n\n")
 	}
-
-	fmt.Printf("\n\n")
 
 	//--------------------------------------------------------
 	// 5) Gather final tags, skipping chat files if desired
@@ -643,7 +646,9 @@ func (r *RepoMap) buildFileGraph(
 		nodeByFile[f] = n
 	}
 
-	fmt.Printf("\n\nNumber of nodes (files): %d\n", g.Nodes().Len())
+	if r.Verbose {
+		fmt.Printf("\n\nNumber of nodes (files): %d\n", g.Nodes().Len())
+	}
 
 	// 3) For each ident, link referencing file -> defining file with weight
 	for ident, _ := range identifiers {
@@ -766,43 +771,11 @@ func (r *RepoMap) GetRankedTagsMap(
 	// Combine chatFnames and otherFnames into a map of unique elements
 	allFnames := uniqueElements(chatFnames, otherFnames)
 
-	// ndelorme - file list
-	// fmt.Println("## files:")
-	// for _, f := range allFnames {
-	// 	fmt.Printf("- %s\n", f)
-	// }
-
 	// Collect all tags from those files
 	allTags := r.getTagsFromFiles(allFnames, commonWords)
 
-	// // ndelorme - all tags
-	// fmt.Println("All tags:")
-	// for _, t := range allTags {
-	// 	fmt.Printf("- %s / %d / %s\n", t.Kind, t.Line, t.Name)
-	// }
-
 	// Get ranked tags by PageRank
 	rankedTags := r.getRankedTagsByPageRank(allTags, mentionedFnames, mentionedIdents)
-
-	// // ndelorme - ranked tags
-	// fmt.Println("\n\nRanked tags:")
-	// for _, t := range rankedTags {
-	// 	fmt.Printf("- %s / %d / %s\n", t.Kind, t.Line, t.Name)
-	// }
-
-	// tr@ck
-	topFive := 5
-	for i, t := range rankedTags {
-		if topFive == 0 {
-			break
-		}
-		if t.Name == "doc" {
-			continue
-		}
-		// first n chars
-		log.Info().Int("index", i).Str("file", t.FileName).Int("line", t.Line).Str("tag", t.Name).Msg("tags")
-		topFive--
-	}
 
 	// special := filterImportantFiles(otherFnames)
 
@@ -816,35 +789,37 @@ func (r *RepoMap) GetRankedTagsMap(
 	finalTags := rankedTags
 
 	bestTree := ""
-	bestTreeTokens := 0.0
+	// bestTreeTokens := 0.0
 
-	lb := 0
+	// lb := 0
 	ub := len(finalTags)
 	middle := ub
 	if middle > 30 {
 		middle = 30
 	}
 
-	for lb <= ub {
-		tree := r.toTree(finalTags[:middle], chatFnames)
-		numTokens := r.TokenCount(tree)
+	bestTree = r.toTree(finalTags, chatFnames)
 
-		diff := math.Abs(numTokens - float64(maxMapTokens))
-		pctErr := diff / float64(maxMapTokens)
-		if (numTokens <= float64(maxMapTokens) && numTokens > bestTreeTokens) || pctErr < 0.15 {
-			bestTree = tree
-			bestTreeTokens = numTokens
-			if pctErr < 0.15 {
-				break
-			}
-		}
-		if numTokens < float64(maxMapTokens) {
-			lb = middle + 1
-		} else {
-			ub = middle - 1
-		}
-		middle = (lb + ub) / 2
-	}
+	// for lb <= ub {
+	// 	tree := r.toTree(finalTags[:middle], chatFnames)
+	// 	numTokens := r.TokenCount(tree)
+
+	// 	diff := math.Abs(numTokens - float64(maxMapTokens))
+	// 	pctErr := diff / float64(maxMapTokens)
+	// 	if (numTokens <= float64(maxMapTokens) && numTokens > bestTreeTokens) || pctErr < 0.15 {
+	// 		bestTree = tree
+	// 		bestTreeTokens = numTokens
+	// 		if pctErr < 0.15 {
+	// 			break
+	// 		}
+	// 	}
+	// 	if numTokens < float64(maxMapTokens) {
+	// 		lb = middle + 1
+	// 	} else {
+	// 		ub = middle - 1
+	// 	}
+	// 	middle = (lb + ub) / 2
+	// }
 
 	endTime := time.Now()
 	r.MapProcessingTime = endTime.Sub(startTime).Seconds()
@@ -929,80 +904,131 @@ func (r *RepoMap) GetRepoMap(
 	return repoContent
 }
 
-// ------------------------------------------------------------------------------------
-// Rendering code blocks with TreeContext from grep-ast
-// ------------------------------------------------------------------------------------
+// toTree converts a list of Tag objects into a tree-like string representation.
 func (r *RepoMap) toTree(tags []Tag, chatFnames []string) string {
+	// Return immediately if no tags
 	if len(tags) == 0 {
 		return ""
 	}
+
+	// 1) Build a set of relative filenames that should be skipped
 	chatRelSet := make(map[string]bool)
 	for _, c := range chatFnames {
-		chatRelSet[r.GetRelFname(c)] = true
+		rel := r.GetRelFname(c)
+		chatRelSet[rel] = true
 	}
 
-	curFname := ""
-	curAbsFname := ""
-	var linesOfInterest []int
+	// tr@ck - verbose
+	for i, c := range chatFnames {
+		log.Info().Int("index", i).Str("file", c).Msg("chat files")
+	}
+
+	//  2) Sort the tags first by FileName in ascending order, and then by Line in ascending order
+	// if two tags have the same FileName. This ensures a stable order where entries
+	// are grouped by file and appear sequentially by their line numbers within each file.
+	sort.Slice(tags, func(i, j int) bool {
+		if tags[i].FileName != tags[j].FileName {
+			return tags[i].FileName < tags[j].FileName
+		}
+		return tags[i].Line < tags[j].Line
+	})
+
+	// A sentinel value used to trigger a final flush of the current file's data in a streaming process.
+	sentinel := "__sentinel_tag__"
+
+	// 3) Append a sentinel tag, which triggers the final flush when we hit it in the loop.
+	tags = append(tags, Tag{FileName: sentinel, Name: sentinel})
+
+	// 4) Prepare to walk through each tag, grouping them by file.
 	var output strings.Builder
 
-	dummyTag := Tag{Name: "____dummy____"}
-	tagsWithDummy := append(tags, dummyTag)
+	var curFname string    // Tracks the *relative* file name of the current group
+	var curAbsFname string // Tracks the absolute path for rendering
+	var linesOfInterest []int
 
-	for _, tag := range tagsWithDummy {
-		if chatRelSet[tag.Name] {
-			continue
-		}
-		if tag.Name != curFname {
+	// sort tags by line number
+
+	// 5) Process tags in a streaming fashion, flushing out each file's lines-of-interest
+	//    when we detect a "new file name" or the dummy tag.
+	for i, t := range tags {
+		log.Info().Int("index", i).Str("file", t.FileName).Int("line", t.Line).Str("tag", t.Name).Msg("tags")
+
+		relFname := t.FileName
+		// // Skip tags that belong to a “chat” file. (Python: if this_rel_fname in chat_rel_fnames: continue)
+		// if chatRelSet[relFname] {
+		// 	continue
+		// }
+
+		// If we've encountered a new file (i.e., the file name changed),
+		// flush out the old file's lines-of-interest (if any).
+		if relFname != curFname {
 			if curFname != "" && linesOfInterest != nil {
+				// Write a blank line, then the file name plus colon
 				output.WriteString("\n" + curFname + ":\n")
-				rendered, err := r.renderTree(curAbsFname, curFname, linesOfInterest)
+
+				code, err := os.ReadFile(curAbsFname)
 				if err != nil {
+					log.Warn().Err(err).Msgf("Failed to read file (%s)", curAbsFname)
+					continue
+				}
+
+				// Render the code snippet for the previous file.
+				rendered, err := r.renderTree(curFname, code, linesOfInterest)
+				if err != nil {
+					// If there's an error reading or parsing the file, just log and move on.
 					log.Warn().Err(err).Msgf("Failed to render tree for %s", curFname)
 				}
 				output.WriteString(rendered)
 			}
-			if tag.Name == "____dummy____" {
+
+			// If the new file name is the dummy sentinel, we've reached the end; stop.
+			if relFname == sentinel {
 				break
 			}
+
+			// Otherwise, reset our state for the *new* file.
+			curFname = relFname
+			curAbsFname = t.FilePath
 			linesOfInterest = []int{}
-			curFname = tag.Name
-			curAbsFname = tag.FilePath
 		}
+
+		// Accumulate the line number from this tag for the current file.
 		if linesOfInterest != nil {
-			linesOfInterest = append(linesOfInterest, tag.Line)
+			linesOfInterest = append(linesOfInterest, t.Line)
 		}
 	}
 
+	// 6) Truncate lines in the final output, in case of minified or extremely long content.
+	//    This matches the Python code that does:  line[:100] for line in output.splitlines()
 	lines := strings.Split(output.String(), "\n")
 	for i, ln := range lines {
 		if len(ln) > 100 {
 			lines[i] = ln[:100]
 		}
 	}
+
+	// 7) Return the final output (plus a newline).
 	return strings.Join(lines, "\n") + "\n"
 }
 
 // renderTree uses a grep-ast TreeContext to produce a nice snippet with lines of interest expanded.
-func (r *RepoMap) renderTree(absFname, relFname string, linesOfInterest []int) (string, error) {
-
-	code, err := os.ReadFile(absFname)
-	if err != nil {
-		return "", fmt.Errorf("failed to read file (%s): %w", absFname, err)
+func (r *RepoMap) renderTree(relFname string, code []byte, linesOfInterest []int) (string, error) {
+	if r.Verbose {
+		fmt.Printf("\nrender_tree:  %s, %v\n", relFname, linesOfInterest)
 	}
 
 	// Build a grep-ast TreeContext.
 	// (Below is an example usage; adapt to whatever the actual library API provides.)
 	tc, err := grepast.NewTreeContext(relFname, code, grepast.TreeContextOptions{
 		Color:                    false,
-		Verbose:                  false,
-		ShowLineNumber:           false,
-		ShowParentContext:        false,
-		ShowChildContext:         false,
+		Verbose:                  r.Verbose,
+		ShowLineNumber:           true,
+		ShowParentContext:        true,
+		ShowChildContext:         true,
 		ShowLastLine:             false,
 		MarginPadding:            0,
-		MarkLinesOfInterest:      false,
-		HeaderMax:                0,
+		MarkLinesOfInterest:      true,
+		HeaderMax:                10,
 		ShowTopOfFileParentScope: false,
 		LinesOfInterestPadding:   0,
 	})
@@ -1020,6 +1046,7 @@ func (r *RepoMap) renderTree(absFname, relFname string, linesOfInterest []int) (
 		loiMap[ln] = struct{}{}
 	}
 
+	fmt.Println(loiMap)
 	// Add the lines of interest
 	tc.AddLinesOfInterest(loiMap)
 	// Expand context around those lines
