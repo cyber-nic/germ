@@ -8,8 +8,8 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	"github.com/cyber-nic/germ"
 	goignore "github.com/cyber-nic/go-gitignore"
-	orb "github.com/cyber-nic/orb"
 )
 
 // findGitRoot walks upward from the given path until
@@ -70,16 +70,16 @@ func main() {
 	//    Make sure you have imported and can reference your repomap code. For example:
 	//    import "github.com/yourname/yourrepo/repomap"
 	//    or if it's in the same module, something like "myproject/repomap"
-	rm := orb.NewRepoMap(
-		1024,             // maxMapTokens
-		root,             // pass the discovered root
-		&orb.ModelStub{}, // or your real model
-		"",               // repoContentPrefix
-		false,            // verbose
-		16000,            // maxContextWindow
-		8,                // mapMulNoFiles
-		"auto",           // refresh
-		orb.RepoMapOptions{
+	rm := germ.NewRepoMap(
+		1024,              // maxMapTokens
+		root,              // pass the discovered root
+		&germ.ModelStub{}, // or your real model
+		"",                // repoContentPrefix
+		false,             // verbose
+		16000,             // maxContextWindow
+		8,                 // mapMulNoFiles
+		"auto",            // refresh
+		germ.RepoMapOptions{
 			ShowLineNumber:      true,
 			ShowParentContext:   true,
 			ShowLastLine:        false,
@@ -112,7 +112,7 @@ func main() {
 		log.Info().Str("path", customIgnoreFilePath).Msg("ignore file loaded")
 	}
 
-	allFiles = orb.GetRepoFiles(absPath, gi) // A helper that gathers files (like in your repomap code)
+	allFiles = germ.GetRepoFiles(absPath, gi) // A helper that gathers files (like in your repomap code)
 
 	// chatSet := make(map[string]bool)
 	// for _, cf := range chatFiles {
@@ -173,8 +173,8 @@ func ConfigLogging(trace, debug *bool) {
 		return
 	}
 
-	// add ORB_LOG env variable to set log level
-	if logLevel, ok := os.LookupEnv("ORB_LOG"); ok {
+	// add GERM_LOG env variable to set log level
+	if logLevel, ok := os.LookupEnv("GERM_LOG"); ok {
 		switch logLevel {
 		case "debug":
 			zerolog.SetGlobalLevel(zerolog.DebugLevel)

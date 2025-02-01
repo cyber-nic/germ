@@ -1,4 +1,4 @@
-COde Repostory Map (corm)
+General Entity Repostory Map (germ)
 
 PYTHONPATH=/code/aider python3 -m aider.main --show-repo-map > aider.map
 

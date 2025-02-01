@@ -1,4 +1,4 @@
-module github.com/cyber-nic/orb
+module github.com/cyber-nic/germ
 
 go 1.23.4
 
