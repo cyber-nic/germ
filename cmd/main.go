@@ -8,6 +8,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	goignore "github.com/cyber-nic/go-gitignore"
 	orb "github.com/cyber-nic/orb"
 )
 
@@ -78,6 +79,13 @@ func main() {
 		16000,            // maxContextWindow
 		8,                // mapMulNoFiles
 		"auto",           // refresh
+		orb.RepoMapOptions{
+			ShowLineNumber:      true,
+			ShowParentContext:   true,
+			ShowLastLine:        false,
+			MarginPadding:       0,
+			MarkLinesOfInterest: false,
+		},
 	)
 
 	// 4. Decide which files are "chat files" vs. "other files"
@@ -90,14 +98,21 @@ func main() {
 	// var chatFiles []string
 	var otherFiles []string
 
-	// If it's a directory, gather all files there as "chat files"
-	info, err := os.Stat(absPath)
-	if err == nil && info.IsDir() {
-		allFiles = orb.FindSrcFiles(absPath) // A helper that gathers files (like in your repomap code)
-	} else {
-		// Single file
-		allFiles = []string{absPath}
+	// Get the custom ignore file path
+	customIgnoreFilePath := filepath.Join(absPath, ".astignore")
+
+	gi := &goignore.GitIgnore{}
+
+	if _, err := os.Stat(customIgnoreFilePath); err == nil {
+		// Load the ignore file if it exists
+		gi, err = goignore.CompileIgnoreFile(customIgnoreFilePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error loading ignore file: %v\n", err)
+		}
+		log.Info().Str("path", customIgnoreFilePath).Msg("ignore file loaded")
 	}
+
+	allFiles = orb.GetRepoFiles(absPath, gi) // A helper that gathers files (like in your repomap code)
 
 	// chatSet := make(map[string]bool)
 	// for _, cf := range chatFiles {
@@ -119,12 +134,12 @@ func main() {
 	// 	fmt.Printf("- %s\n", f)
 	// }
 
-	// 5. Actually call GetRepoMap
+	// 5. Generate Repo Map
 	mentionedFnames := map[string]bool{}
 	mentionedIdents := map[string]bool{}
 	forceRefresh := false
 
-	repoMapOutput := rm.GetRepoMap(
+	repoMapOutput := rm.GenerateRepoMap(
 		allFiles,
 		otherFiles,
 		mentionedFnames,
