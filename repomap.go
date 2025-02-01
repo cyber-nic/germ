@@ -12,9 +12,11 @@ import (
 	"time"
 
 	// Import the grep-ast library
+	goignore "github.com/cyber-nic/go-gitignore"
 	grepast "github.com/cyber-nic/grep-ast"
-	"github.com/rs/zerolog/log"
 	sitter "github.com/tree-sitter/go-tree-sitter"
+
+	"github.com/rs/zerolog/log"
 	"gonum.org/v1/gonum/graph"
 	"gonum.org/v1/gonum/graph/multi"
 	"gonum.org/v1/gonum/graph/network"
@@ -56,6 +58,7 @@ type RepoMap struct {
 	MapProcessingTime float64
 	LastMap           string
 	querySourceCache  map[string]string
+	treeOptions       grepast.TreeContextOptions
 }
 
 // ModelStub simulates the main_model used in Python code (for token_count, etc.).
@@ -79,6 +82,7 @@ func NewRepoMap(
 	maxContextWindow int,
 	mapMulNoFiles int,
 	refresh string,
+	options RepoMapOptions,
 ) *RepoMap {
 	if root == "" {
 		cwd, err := os.Getwd()
@@ -97,6 +101,19 @@ func NewRepoMap(
 		MapMulNoFiles:    mapMulNoFiles,
 		MaxCtxWindow:     maxContextWindow,
 		querySourceCache: make(map[string]string),
+		treeOptions: grepast.TreeContextOptions{
+			Color:                    options.Color,
+			Verbose:                  verbose,
+			ShowLineNumber:           options.ShowLineNumber,
+			ShowParentContext:        options.ShowParentContext,
+			ShowChildContext:         options.ShowChildContext,
+			ShowLastLine:             options.ShowLastLine,
+			MarginPadding:            options.MarginPadding,
+			MarkLinesOfInterest:      options.MarkLinesOfInterest,
+			HeaderMax:                options.HeaderMax,
+			ShowTopOfFileParentScope: options.ShowTopOfFileParentScope,
+			LinesOfInterestPadding:   options.LinesOfInterestPadding,
+		},
 	}
 
 	if verbose {
@@ -830,8 +847,22 @@ func (r *RepoMap) GetRankedTagsMap(
 
 // tr@ck -- improve this chat vs other files. We should have repoFiles and chatFiles
 
-// GetRepoMap is the top-level function (mirroring the Python method) that produces the “repo content”.
-func (r *RepoMap) GetRepoMap(
+type RepoMapOptions struct {
+	Color                    bool
+	Verbose                  bool
+	ShowLineNumber           bool
+	ShowParentContext        bool
+	ShowChildContext         bool
+	ShowLastLine             bool
+	MarginPadding            int
+	MarkLinesOfInterest      bool
+	HeaderMax                int
+	ShowTopOfFileParentScope bool
+	LinesOfInterestPadding   int
+}
+
+// GenerateRepoMap is the top-level function (mirroring the Python method) that produces the “repo content”.
+func (r *RepoMap) GenerateRepoMap(
 	chatFiles, otherFiles []string,
 	mentionedFnames, mentionedIdents map[string]bool,
 	forceRefresh bool,
@@ -920,7 +951,7 @@ func (r *RepoMap) toTree(tags []Tag, chatFnames []string) string {
 
 	// tr@ck - verbose
 	for i, c := range chatFnames {
-		log.Info().Int("index", i).Str("file", c).Msg("chat files")
+		log.Debug().Int("index", i).Str("file", c).Msg("chat files")
 	}
 
 	//  2) Sort the tags first by FileName in ascending order, and then by Line in ascending order
@@ -951,7 +982,7 @@ func (r *RepoMap) toTree(tags []Tag, chatFnames []string) string {
 	// 5) Process tags in a streaming fashion, flushing out each file's lines-of-interest
 	//    when we detect a "new file name" or the dummy tag.
 	for i, t := range tags {
-		log.Info().Int("index", i).Str("file", t.FileName).Int("line", t.Line).Str("tag", t.Name).Msg("tags")
+		log.Debug().Int("index", i).Str("file", t.FileName).Int("line", t.Line).Str("tag", t.Name).Msg("tags")
 
 		relFname := t.FileName
 		// // Skip tags that belong to a “chat” file. (Python: if this_rel_fname in chat_rel_fnames: continue)
@@ -1019,19 +1050,7 @@ func (r *RepoMap) renderTree(relFname string, code []byte, linesOfInterest []int
 
 	// Build a grep-ast TreeContext.
 	// (Below is an example usage; adapt to whatever the actual library API provides.)
-	tc, err := grepast.NewTreeContext(relFname, code, grepast.TreeContextOptions{
-		Color:                    false,
-		Verbose:                  r.Verbose,
-		ShowLineNumber:           true,
-		ShowParentContext:        true,
-		ShowChildContext:         true,
-		ShowLastLine:             false,
-		MarginPadding:            0,
-		MarkLinesOfInterest:      true,
-		HeaderMax:                10,
-		ShowTopOfFileParentScope: false,
-		LinesOfInterestPadding:   0,
-	})
+	tc, err := grepast.NewTreeContext(relFname, code, r.treeOptions)
 	if err != nil {
 		if err == grepast.ErrorUnsupportedLanguage || err == grepast.ErrorUnrecognizedFiletype {
 			return "", nil
@@ -1046,7 +1065,7 @@ func (r *RepoMap) renderTree(relFname string, code []byte, linesOfInterest []int
 		loiMap[ln] = struct{}{}
 	}
 
-	fmt.Println(loiMap)
+	// fmt.Println(loiMap)
 	// Add the lines of interest
 	tc.AddLinesOfInterest(loiMap)
 	// Expand context around those lines
@@ -1090,8 +1109,8 @@ func hsvToRGB(h, s, v float64) (int, int, int) {
 	return int(r * 255), int(g * 255), int(b * 255)
 }
 
-// FindSrcFiles gathers all files in a directory (or the file itself).
-func FindSrcFiles(path string) []string {
+// GetRepoFiles gathers all files in a directory (or the file itself).
+func GetRepoFiles(path string, gi *goignore.GitIgnore) []string {
 	info, err := os.Stat(path)
 	if err != nil {
 		return []string{}
@@ -1107,14 +1126,14 @@ func FindSrcFiles(path string) []string {
 		if err != nil {
 			return nil
 		}
-		if grepast.MatchIgnorePattern(p, grepast.DefaultIgnorePatterns) {
-			// log.Trace().Str("op", "source files").Str("path", p).Msg("skip")
+		// Skip files that match the ignore patterns
+		if gi.MatchesPath(p) {
 			return nil
 		}
 		if info.IsDir() {
 			return nil
 		}
-		// log.Debug().Str("op", "source files").Str("path", p).Msg("add")
+		log.Debug().Str("op", "source files").Str("path", p).Msg("add")
 		srcFiles = append(srcFiles, p)
 		return nil
 	})
