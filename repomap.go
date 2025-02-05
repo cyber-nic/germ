@@ -58,7 +58,6 @@ type RepoMap struct {
 	MapProcessingTime float64
 	LastMap           string
 	querySourceCache  map[string]string
-	treeOptions       grepast.TreeContextOptions
 }
 
 // ModelStub simulates the main_model used in Python code (for token_count, etc.).
@@ -101,19 +100,19 @@ func NewRepoMap(
 		MapMulNoFiles:    mapMulNoFiles,
 		MaxCtxWindow:     maxContextWindow,
 		querySourceCache: make(map[string]string),
-		treeOptions: grepast.TreeContextOptions{
-			Color:                    options.Color,
-			Verbose:                  verbose,
-			ShowLineNumber:           options.ShowLineNumber,
-			ShowParentContext:        options.ShowParentContext,
-			ShowChildContext:         options.ShowChildContext,
-			ShowLastLine:             options.ShowLastLine,
-			MarginPadding:            options.MarginPadding,
-			MarkLinesOfInterest:      options.MarkLinesOfInterest,
-			HeaderMax:                options.HeaderMax,
-			ShowTopOfFileParentScope: options.ShowTopOfFileParentScope,
-			LinesOfInterestPadding:   options.LinesOfInterestPadding,
-		},
+		// treeOptions: grepast.TreeContextOptions{
+		// 	Color:                    options.Color,
+		// 	Verbose:                  verbose,
+		// 	ShowLineNumber:           options.ShowLineNumber,
+		// 	ShowParentContext:        options.ShowParentContext,
+		// 	ShowChildContext:         options.ShowChildContext,
+		// 	ShowLastLine:             options.ShowLastLine,
+		// 	MarginPadding:            options.MarginPadding,
+		// 	MarkLinesOfInterest:      options.MarkLinesOfInterest,
+		// 	HeaderMax:                options.HeaderMax,
+		// 	ShowTopOfFileParentScope: options.ShowTopOfFileParentScope,
+		// 	LinesOfInterestPadding:   options.LinesOfInterestPadding,
+		// },
 	}
 
 	if verbose {
@@ -1050,7 +1049,16 @@ func (r *RepoMap) renderTree(relFname string, code []byte, linesOfInterest []int
 
 	// Build a grep-ast TreeContext.
 	// (Below is an example usage; adapt to whatever the actual library API provides.)
-	tc, err := grepast.NewTreeContext(relFname, code, r.treeOptions)
+	tc, err := grepast.NewTreeContext(
+		relFname, code,
+		grepast.WithColor(false), // todo
+		grepast.WithChildContext(false),
+		grepast.WithLastLineContext(false),
+		grepast.WithTopMargin(0),
+		grepast.WithLinesOfInterestMarked(false),
+		grepast.WithLinesOfInterestPadding(2),
+		grepast.WithTopOfFileParentScope(false),
+	)
 	if err != nil {
 		if err == grepast.ErrorUnsupportedLanguage || err == grepast.ErrorUnrecognizedFiletype {
 			return "", nil

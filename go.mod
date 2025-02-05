@@ -4,7 +4,7 @@ go 1.23.4
 
 require (
 	github.com/cyber-nic/go-gitignore v0.1.0
-	github.com/cyber-nic/grep-ast v0.3.0
+	github.com/cyber-nic/grep-ast v0.4.0
 	github.com/rs/zerolog v1.33.0
 	github.com/stretchr/testify v1.9.0
 	github.com/tree-sitter/go-tree-sitter v0.24.0
@@ -12,10 +12,9 @@ require (
 	gonum.org/v1/gonum v0.15.1
 )
 
-replace github.com/cyber-nic/grep-ast => /code/cyber-nic/grep-ast
-
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/fatih/color v1.18.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-pointer v0.0.1 // indirect
