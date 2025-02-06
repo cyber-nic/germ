@@ -4,7 +4,7 @@ go 1.23.4
 
 require (
 	github.com/cyber-nic/go-gitignore v0.1.0
-	github.com/cyber-nic/grep-ast v0.4.0
+	github.com/cyber-nic/grep-ast v0.4.1
 	github.com/rs/zerolog v1.33.0
 	github.com/stretchr/testify v1.9.0
 	github.com/tree-sitter/go-tree-sitter v0.24.0
