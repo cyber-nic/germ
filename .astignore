@@ -1,0 +1,117 @@
+######################################
+# General OS & Editor-Specific Files #
+######################################
+
+# Hidden files (general exclusion)
+#.*
+
+# Vim swap files
+.*.swp
+
+# macOS metadata files
+.DS_Store
+
+# Windows metadata files
+Thumbs.db
+
+# JetBrains IDE metadata
+.idea/
+
+# VSCode workspace settings
+.vscode/
+
+# IntelliJ project files
+*.iml
+
+#################################
+# Build Artifacts & Binaries    #
+#################################
+
+# Common compiled artifacts
+bin/
+obj/
+target/   # Rust, Java, Scala
+dist/     # Common build output
+
+# Java compiled files
+*.class
+
+# Python compiled files
+*.pyc
+*.pyo
+
+# .NET build artifacts
+obj/
+
+# Rust dependency lockfile
+Cargo.lock
+
+#################################
+# Dependency & Package Managers #
+#################################
+
+# Go dependencies
+go.sum
+vendor/
+
+# Node.js dependencies
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Maven dependencies
+.mvn/
+pom.xml
+
+# Gradle dependencies
+.gradle/
+
+# PHP dependencies
+composer.lock
+
+# Common dependency directories
+deps/
+
+#######################################
+# Virtual Environments & Package Caches #
+#######################################
+
+# Python virtual environments
+.venv/
+venv/
+
+# Python bytecode cache
+__pycache__/
+
+# Python test environments
+.pytest_cache/
+.tox/
+.nox/
+
+# Direnv environment files
+.direnv/
+
+# Common Lisp package cache
+.cpcache/
+
+# Clojure linter cache
+.clj-kondo/
+
+#################################
+# Coverage & Test Reports       #
+#################################
+
+.coverage    # Python coverage reports
+.nyc_output/ # NYC (JavaScript test coverage)
+
+#################################
+# Configuration & Infrastructure #
+#################################
+
+# Git repository
+.git/
+
+# Terraform cache
+.terraform/
+
