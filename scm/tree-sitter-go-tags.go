@@ -1,3 +1,6 @@
+package scm
+
+var goTagQuery = `
 (
   (comment)* @doc
   .
@@ -28,3 +31,4 @@
   name: (type_identifier) @name.definition.type) @definition.type
 
 (type_identifier) @name.reference.type @reference.type
+`

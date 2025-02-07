@@ -1,3 +1,6 @@
+package scm
+
+var elispTagQuery = `
 ;; defun/defsubst
 (function_definition name: (symbol) @name.definition.function) @definition.function
 
@@ -6,3 +9,4 @@
 
 ;; Match function calls
 (list (symbol) @name.reference.function) @reference.function
+`

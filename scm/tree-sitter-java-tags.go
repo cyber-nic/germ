@@ -1,3 +1,6 @@
+package scm
+
+var javaTagQuery = `
 (class_declaration
   name: (identifier) @name.definition.class) @definition.class
 
@@ -18,3 +21,4 @@
   type: (type_identifier) @name.reference.class) @reference.class
 
 (superclass (type_identifier) @name.reference.class) @reference.class
+`

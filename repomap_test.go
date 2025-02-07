@@ -1,8 +1,6 @@
 package germ
 
 import (
-	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -85,80 +83,6 @@ func TestGetRelFname(t *testing.T) {
 
 			if result != tt.expected {
 				t.Errorf("GetRelFname(%q) = %q; want %q", tt.fname, result, tt.expected)
-			}
-		})
-	}
-}
-
-// TestGetSourceCodeMapQuery tests the getSourceCodeMapQuery method of the RepoMap struct.
-func TestGetSourceCodeMapQuery(t *testing.T) {
-	// Initialize RepoMap
-	repo := RepoMap{
-		querySourceCache: make(map[string]string),
-	}
-
-	// Test cases
-	tests := []struct {
-		name          string
-		lang          string
-		expectedError bool
-		expectedData  string
-	}{
-		{
-			name:          "Valid language: Go",
-			lang:          "go",
-			expectedError: false,
-		},
-		{
-			name:          "Valid language: Python",
-			lang:          "python",
-			expectedError: false,
-		},
-		{
-			name:          "Valid language: JavaScript",
-			lang:          "javascript",
-			expectedError: false,
-		},
-		{
-			name:          "Unsupported language",
-			lang:          "haskell",
-			expectedError: true,
-		},
-		{
-			name:          "Cached query source",
-			lang:          "go",
-			expectedError: false,
-		},
-	}
-
-	// Run test cases
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-
-			data, err := repo.getSourceCodeMapQuery(tt.lang)
-
-			if tt.expectedError {
-				if err == nil {
-					t.Errorf("expected an error but got none")
-				}
-			} else {
-				if err != nil {
-					t.Errorf("unexpected error: %v", err)
-				}
-
-				// validate query source
-				tpl := "queries/tree-sitter-%s-tags.scm"
-				queryFilename := fmt.Sprintf(tpl, tt.lang)
-
-				// read query file for validation
-				querySource, err := os.ReadFile(queryFilename)
-				if err != nil {
-					t.Errorf("failed to read file %q: %v", queryFilename, err)
-				}
-
-				if data != string(querySource) {
-					t.Errorf("expected data %q, got %q", string(querySource), data)
-				}
 			}
 		})
 	}

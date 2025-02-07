@@ -1,3 +1,6 @@
+package scm
+
+var qlTagQuery = `
 (classlessPredicate
   name: (predicateName) @name.definition.function) @definition.function
 
@@ -24,3 +27,4 @@
 
 (typeExpr
   name: (className) @name.reference.type) @reference.type
+`

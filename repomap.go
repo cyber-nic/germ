@@ -12,6 +12,7 @@ import (
 	"time"
 
 	// Import the grep-ast library
+	scm "github.com/cyber-nic/germ/scm"
 	goignore "github.com/cyber-nic/go-gitignore"
 	grepast "github.com/cyber-nic/grep-ast"
 	sitter "github.com/tree-sitter/go-tree-sitter"
@@ -57,7 +58,6 @@ type RepoMap struct {
 	MapMulNoFiles     int
 	MapProcessingTime float64
 	LastMap           string
-	querySourceCache  map[string]string
 }
 
 // ModelStub simulates the main_model used in Python code (for token_count, etc.).
@@ -91,28 +91,14 @@ func NewRepoMap(
 	}
 
 	r := &RepoMap{
-		Refresh:          refresh,
-		Verbose:          verbose,
-		Root:             root,
-		MainModel:        mainModel,
-		RepoContentPx:    repoContentPrefix,
-		MaxMapTokens:     maxMapTokens,
-		MapMulNoFiles:    mapMulNoFiles,
-		MaxCtxWindow:     maxContextWindow,
-		querySourceCache: make(map[string]string),
-		// treeOptions: grepast.TreeContextOptions{
-		// 	Color:                    options.Color,
-		// 	Verbose:                  verbose,
-		// 	ShowLineNumber:           options.ShowLineNumber,
-		// 	ShowParentContext:        options.ShowParentContext,
-		// 	ShowChildContext:         options.ShowChildContext,
-		// 	ShowLastLine:             options.ShowLastLine,
-		// 	MarginPadding:            options.MarginPadding,
-		// 	MarkLinesOfInterest:      options.MarkLinesOfInterest,
-		// 	HeaderMax:                options.HeaderMax,
-		// 	ShowTopOfFileParentScope: options.ShowTopOfFileParentScope,
-		// 	LinesOfInterestPadding:   options.LinesOfInterestPadding,
-		// },
+		Refresh:       refresh,
+		Verbose:       verbose,
+		Root:          root,
+		MainModel:     mainModel,
+		RepoContentPx: repoContentPrefix,
+		MaxMapTokens:  maxMapTokens,
+		MapMulNoFiles: mapMulNoFiles,
+		MaxCtxWindow:  maxContextWindow,
 	}
 
 	if verbose {
@@ -169,38 +155,11 @@ func (r *RepoMap) GetFileTags(fname, relFname string, filter TagFilter) ([]Tag, 
 	return data, nil
 }
 
-// getSourceCodeMapQuery reads the query file for the given language.
-func (r *RepoMap) getSourceCodeMapQuery(lang string) (string, error) {
-	tpl := "queries/tree-sitter-%s-tags.scm"
-
-	if _, ok := r.querySourceCache[lang]; ok {
-		return r.querySourceCache[lang], nil
-	}
-
-	queryFilename := fmt.Sprintf(tpl, lang)
-
-	// check if file exists
-	if _, err := os.Stat(queryFilename); err != nil {
-		return "", fmt.Errorf("query file not found: %s", queryFilename)
-	}
-
-	// read file
-	querySource, err := os.ReadFile(queryFilename)
-	if err != nil {
-		return "", fmt.Errorf("failed to read query file (%s): %v", queryFilename, err)
-	}
-
-	// cache the query source
-	r.querySourceCache[lang] = string(querySource)
-
-	return r.querySourceCache[lang], nil
-}
-
 // LoadQuery loads the Tree-sitter query text and compiles a sitter.Query.
 func (r *RepoMap) LoadQuery(lang *sitter.Language, langID string) (*sitter.Query, error) {
-	querySource, err := r.getSourceCodeMapQuery(langID)
+	querySource, err := scm.GetSitterQuery(scm.SitterLanguage(langID))
 	if err != nil {
-		return nil, fmt.Errorf("failed to read query file (%s): %w", langID, err)
+		return nil, fmt.Errorf("failed to obtain query (%s): %w", langID, err)
 	}
 	if len(querySource) == 0 {
 		return nil, fmt.Errorf("empty query file: %s", langID)
@@ -789,6 +748,11 @@ func (r *RepoMap) GetRankedTagsMap(
 
 	// Collect all tags from those files
 	allTags := r.getTagsFromFiles(allFnames, commonWords)
+
+	// Handle empty tag list
+	if len(allTags) == 0 {
+		return ""
+	}
 
 	// Get ranked tags by PageRank
 	rankedTags := r.getRankedTagsByPageRank(allTags, mentionedFnames, mentionedIdents)

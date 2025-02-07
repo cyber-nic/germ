@@ -1,4 +1,6 @@
-(value_declaration (function_declaration_left (lower_case_identifier) @name.definition.function)) @definition.function
+package scm
+
+var elmTagQuery = `(value_declaration (function_declaration_left (lower_case_identifier) @name.definition.function)) @definition.function
 
 (function_call_expr (value_expr (value_qid) @name.reference.function)) @reference.function
 (exposed_value (lower_case_identifier) @name.reference.function) @reference.function
@@ -17,3 +19,4 @@
 (module_declaration
     (upper_case_qid (upper_case_identifier)) @name.definition.module
 ) @definition.module
+`

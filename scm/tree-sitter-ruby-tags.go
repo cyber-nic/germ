@@ -1,3 +1,6 @@
+package scm
+
+var rubyTagQuery = `
 ; Method definitions
 
 (
@@ -62,3 +65,4 @@
   (#is-not? local)
   (#not-match? @name.reference.call "^(lambda|load|require|require_relative|__FILE__|__LINE__)$")
 )
+`

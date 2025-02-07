@@ -1,4 +1,6 @@
-(struct_specifier name: (type_identifier) @name.definition.class body:(_)) @definition.class
+package scm
+
+var cTagQuery = `(struct_specifier name: (type_identifier) @name.definition.class body:(_)) @definition.class
 
 (declaration type: (union_specifier name: (type_identifier) @name.definition.class)) @definition.class
 
@@ -7,3 +9,4 @@
 (type_definition declarator: (type_identifier) @name.definition.type) @definition.type
 
 (enum_specifier name: (type_identifier) @name.definition.type) @definition.type
+`

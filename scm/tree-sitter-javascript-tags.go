@@ -1,3 +1,6 @@
+package scm
+
+var javascriptTagQuery = `
 (
   (comment)* @doc
   .
@@ -86,3 +89,4 @@
 
 (new_expression
   constructor: (_) @name.reference.class) @reference.class
+`

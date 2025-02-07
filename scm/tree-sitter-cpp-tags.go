@@ -1,4 +1,6 @@
-(struct_specifier name: (type_identifier) @name.definition.class body:(_)) @definition.class
+package scm
+
+var cppTagQuery = `(struct_specifier name: (type_identifier) @name.definition.class body:(_)) @definition.class
 
 (declaration type: (union_specifier name: (type_identifier) @name.definition.class)) @definition.class
 
@@ -13,3 +15,4 @@
 (enum_specifier name: (type_identifier) @name.definition.type) @definition.type
 
 (class_specifier name: (type_identifier) @name.definition.class) @definition.class
+`

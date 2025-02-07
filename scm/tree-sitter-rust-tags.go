@@ -1,3 +1,6 @@
+package scm
+
+var rustTagQuery = `
 ; ADT definitions
 
 (struct_item
@@ -58,3 +61,4 @@
 (impl_item
     type: (type_identifier) @name.reference.implementation
     !trait) @reference.implementation
+`
