@@ -1,6 +1,4 @@
-package scm
-
-var dartTagQuery = `(class_definition
+(class_definition
   name: (identifier) @name.definition.class) @definition.class
 
 (method_signature
@@ -89,4 +87,5 @@ var dartTagQuery = `(class_definition
 	  (argument_part
 		(arguments
 		  (argument)*))?)?) @reference.call
-`
+
+

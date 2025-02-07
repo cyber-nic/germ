@@ -1,6 +1,3 @@
-package scm
-
-var cSharpTagQuery = `
 (class_declaration
  name: (identifier) @name.definition.class
  ) @definition.class
@@ -47,4 +44,3 @@ var cSharpTagQuery = `
 (namespace_declaration
  name: (identifier) @name.definition.module
 ) @definition.module
-`

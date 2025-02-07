@@ -1,6 +1,3 @@
-package scm
-
-var typescriptTagQuery = `
 (function_signature
   name: (identifier) @name.definition.function) @definition.function
 
@@ -42,4 +39,3 @@ var typescriptTagQuery = `
 
 (enum_declaration
   name: (identifier) @name.definition.enum) @definition.enum
-`

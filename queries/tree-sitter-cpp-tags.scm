@@ -1,6 +1,4 @@
-package scm
-
-var cppTagQuery = `(struct_specifier name: (type_identifier) @name.definition.class body:(_)) @definition.class
+(struct_specifier name: (type_identifier) @name.definition.class body:(_)) @definition.class
 
 (declaration type: (union_specifier name: (type_identifier) @name.definition.class)) @definition.class
 
@@ -15,4 +13,3 @@ var cppTagQuery = `(struct_specifier name: (type_identifier) @name.definition.cl
 (enum_specifier name: (type_identifier) @name.definition.type) @definition.type
 
 (class_specifier name: (type_identifier) @name.definition.class) @definition.class
-`

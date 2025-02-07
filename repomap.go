@@ -12,7 +12,7 @@ import (
 	"time"
 
 	// Import the grep-ast library
-	scm "github.com/cyber-nic/germ/scm"
+	queries "github.com/cyber-nic/germ/queries"
 	goignore "github.com/cyber-nic/go-gitignore"
 	grepast "github.com/cyber-nic/grep-ast"
 	sitter "github.com/tree-sitter/go-tree-sitter"
@@ -157,7 +157,7 @@ func (r *RepoMap) GetFileTags(fname, relFname string, filter TagFilter) ([]Tag, 
 
 // LoadQuery loads the Tree-sitter query text and compiles a sitter.Query.
 func (r *RepoMap) LoadQuery(lang *sitter.Language, langID string) (*sitter.Query, error) {
-	querySource, err := scm.GetSitterQuery(scm.SitterLanguage(langID))
+	querySource, err := queries.GetSitterQuery(queries.SitterLanguage(langID))
 	if err != nil {
 		return nil, fmt.Errorf("failed to obtain query (%s): %w", langID, err)
 	}
@@ -165,7 +165,7 @@ func (r *RepoMap) LoadQuery(lang *sitter.Language, langID string) (*sitter.Query
 		return nil, fmt.Errorf("empty query file: %s", langID)
 	}
 
-	q, qErr := sitter.NewQuery(lang, querySource)
+	q, qErr := sitter.NewQuery(lang, string(querySource))
 	if qErr != nil {
 		var queryErr *sitter.QueryError
 		if errors.As(qErr, &queryErr) {

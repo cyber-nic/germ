@@ -1,6 +1,57 @@
 package scm
 
-import "fmt"
+import (
+	_ "embed"
+	"fmt"
+)
+
+//go:embed tree-sitter-c_sharp-tags.scm
+var cSharpTagQuery []byte
+
+//go:embed tree-sitter-c-tags.scm
+var cTagQuery []byte
+
+//go:embed tree-sitter-cpp-tags.scm
+var cppTagQuery []byte
+
+//go:embed tree-sitter-dart-tags.scm
+var dartTagQuery []byte
+
+//go:embed tree-sitter-elisp-tags.scm
+var elispTagQuery []byte
+
+//go:embed tree-sitter-elixir-tags.scm
+var elixirTagQuery []byte
+
+//go:embed tree-sitter-elm-tags.scm
+var elmTagQuery []byte
+
+//go:embed tree-sitter-go-tags.scm
+var goTagQuery []byte
+
+//go:embed tree-sitter-java-tags.scm
+var javaTagQuery []byte
+
+//go:embed tree-sitter-javascript-tags.scm
+var javascriptTagQuery []byte
+
+//go:embed tree-sitter-ocaml-tags.scm
+var ocamlTagQuery []byte
+
+//go:embed tree-sitter-php-tags.scm
+var phpTagQuery []byte
+
+//go:embed tree-sitter-python-tags.scm
+var pythonTagQuery []byte
+
+//go:embed tree-sitter-ruby-tags.scm
+var rubyTagQuery []byte
+
+//go:embed tree-sitter-rust-tags.scm
+var rustTagQuery []byte
+
+//go:embed tree-sitter-typescript-tags.scm
+var typescriptTagQuery []byte
 
 // SitterLanguage is the language for the sitter queries
 type SitterLanguage string
@@ -41,7 +92,7 @@ const (
 )
 
 // queries is a map of sitter queries for each language
-var queries = map[SitterLanguage]string{
+var queries = map[SitterLanguage][]byte{
 	CSharp:     cSharpTagQuery,
 	C:          cTagQuery,
 	Cpp:        cppTagQuery,
@@ -61,11 +112,11 @@ var queries = map[SitterLanguage]string{
 }
 
 // GetSitterQuery returns the sitter query for the given language
-func GetSitterQuery(language SitterLanguage) (string, error) {
+func GetSitterQuery(language SitterLanguage) ([]byte, error) {
 	lang := SitterLanguage(language)
 	query, ok := queries[lang]
 	if !ok {
-		return "", fmt.Errorf("language not supported")
+		return []byte{}, fmt.Errorf("language not supported")
 	}
 	return query, nil
 }

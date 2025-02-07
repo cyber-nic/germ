@@ -1,6 +1,3 @@
-package scm
-
-var pythonTagQuery = `
 (class_definition
   name: (identifier) @name.definition.class) @definition.class
 
@@ -13,4 +10,3 @@ var pythonTagQuery = `
       (attribute
         attribute: (identifier) @name.reference.call)
   ]) @reference.call
-`

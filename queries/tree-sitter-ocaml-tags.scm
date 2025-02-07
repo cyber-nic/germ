@@ -1,6 +1,3 @@
-package scm
-
-var ocamlTagQuery = `
 ; Modules
 ;--------
 
@@ -116,4 +113,3 @@ var ocamlTagQuery = `
 )
 
 (method_invocation (method_name) @name.reference.call) @reference.call
-`

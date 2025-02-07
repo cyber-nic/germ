@@ -1,6 +1,3 @@
-package scm
-
-var phpTagQuery = `
 (class_declaration
   name: (name) @name.definition.class) @definition.class
 
@@ -27,4 +24,3 @@ var phpTagQuery = `
 
 (member_call_expression
   name: (name) @name.reference.call) @reference.call
-`

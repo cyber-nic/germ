@@ -1,6 +1,3 @@
-package scm
-
-var elixirTagQuery = `
 ; Definitions
 
 ; * modules and protocols
@@ -55,4 +52,3 @@ var elixirTagQuery = `
 
 ; * modules
 (alias) @name.reference.module @reference.module
-`
