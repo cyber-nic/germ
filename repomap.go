@@ -1,3 +1,4 @@
+// Package germ contains the core logic for the germ tool
 package germ
 
 import (
@@ -11,24 +12,32 @@ import (
 	"strings"
 	"time"
 
+	_ "embed"
+
 	// Import the grep-ast library
 	queries "github.com/cyber-nic/germ/queries"
 	goignore "github.com/cyber-nic/go-gitignore"
 	grepast "github.com/cyber-nic/grep-ast"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"gonum.org/v1/gonum/graph"
 	"gonum.org/v1/gonum/graph/multi"
 	"gonum.org/v1/gonum/graph/network"
 )
 
+//go:embed .astignore
+var defaultGlobIgnore string
+
 // chat files: files that are part of the chat
 // other files: files that are not (yet) part of the chat
 // warned_files: files that have been warned about and are excluded
 
 const (
+	// TagKindDef is the kind of tag that represents a definition
 	TagKindDef = "def"
+	// TagKindRef is the kind of tag that represents a reference
 	TagKindRef = "ref"
 )
 
@@ -41,47 +50,44 @@ type Tag struct {
 	Kind     string
 }
 
-var (
-	ErrOperational = errors.New("operational error")
-	ErrDatabase    = errors.New("database error")
+// RepoMap default options
+const (
+	defaultGlobIgnoreEnabled    = true
+	globIgnoreFileDefault       = true
+	defaultMaxCtxFileMultiplier = 8
+	defaultMaxCtxWindow         = 16000
+	defaultMaxMapTokens         = 1024
+	defaultRepoContentPrefix    = ""
+	defaultVerbose              = false
 )
-
-// RepoMap is the Go equivalent of the Python class `RepoMap`.
-type RepoMap struct {
-	Refresh           string
-	Verbose           bool
-	Root              string
-	MainModel         *ModelStub
-	RepoContentPx     string
-	MaxMapTokens      int
-	MaxCtxWindow      int
-	MapMulNoFiles     int
-	MapProcessingTime float64
-	LastMap           string
-}
 
 // ModelStub simulates the main_model used in Python code (for token_count, etc.).
 type ModelStub struct{}
 
-// TokenCount is a naive token estimator. Real code might call tiktoken or other logic.
-func (m *ModelStub) TokenCount(text string) int {
-	// Very naive: 1 token ~ 4 chars
-	return len(text) / 4
+// RepoMap is the Go equivalent of the Python class `RepoMap`.
+type RepoMap struct {
+	globIgnoreEnabled    bool
+	globIgnoreFilePath   string
+	globIgnorePatterns   *goignore.GitIgnore
+	lastMap              string
+	mainModel            *ModelStub
+	maxMapTokens         int
+	maxCtxWindow         int
+	maxCtxFileMultiplier int // map_mul_no_files
+	totalProcessingTime  float64
+	contentPrefix        string
+	root                 string
+	verbose              bool
+	// per-file map options
+	mapShowLineNumber         bool
+	mapShowParentContext      bool
+	mapShowLastLine           bool
+	mapMarkLinesOfInterest    bool
+	mapLinesOfInterestPadding int
 }
 
-// ------------------------------------------------------------------------------------
-// RepoMap Constructor
-// ------------------------------------------------------------------------------------
-func NewRepoMap(
-	maxMapTokens int,
-	root string,
-	mainModel *ModelStub,
-	repoContentPrefix string,
-	verbose bool,
-	maxContextWindow int,
-	mapMulNoFiles int,
-	refresh string,
-	options RepoMapOptions,
+// NewRepoMap is the repo map constructor.
+func NewRepoMap(root string, mainModel *ModelStub, options ...func(*RepoMap),
 ) *RepoMap {
 	if root == "" {
 		cwd, err := os.Getwd()
@@ -90,26 +96,180 @@ func NewRepoMap(
 		}
 	}
 
-	r := &RepoMap{
-		Refresh:       refresh,
-		Verbose:       verbose,
-		Root:          root,
-		MainModel:     mainModel,
-		RepoContentPx: repoContentPrefix,
-		MaxMapTokens:  maxMapTokens,
-		MapMulNoFiles: mapMulNoFiles,
-		MaxCtxWindow:  maxContextWindow,
+	zerolog.SetGlobalLevel(zerolog.ErrorLevel)
+
+	rm := &RepoMap{
+		globIgnoreEnabled:    defaultGlobIgnoreEnabled,
+		globIgnorePatterns:   &goignore.GitIgnore{},
+		contentPrefix:        defaultRepoContentPrefix,
+		mainModel:            mainModel,
+		maxMapTokens:         defaultMaxMapTokens,
+		maxCtxFileMultiplier: defaultMaxCtxFileMultiplier,
+		maxCtxWindow:         defaultMaxCtxWindow,
+		root:                 root,
+		verbose:              defaultVerbose,
 	}
 
-	if verbose {
-		fmt.Printf("RepoMap initialized with map_mul_no_files: %d\n", mapMulNoFiles)
+	// Apply any additional options to the RepoMap object
+	for _, o := range options {
+		o(rm)
 	}
-	return r
+
+	if rm.maxCtxFileMultiplier != defaultMaxCtxFileMultiplier {
+		log.Debug().Int("multiplier", rm.maxCtxFileMultiplier).Msg("RepoMap initialized with Max Context File Multiplier")
+	}
+
+	// Glob ignore has been explicitly disabled
+	if !rm.globIgnoreEnabled {
+		return rm
+	}
+
+	log.Debug().Msg("RepoMap initialized with Glob Ignore Enabled")
+
+	// Glob file path provided
+	if rm.globIgnoreFilePath != "" {
+		// handle path
+		if _, err := os.Stat(rm.globIgnoreFilePath); err == nil {
+			// Load the ignore file if it exists
+			rm.globIgnorePatterns, err = goignore.CompileIgnoreFile(rm.globIgnoreFilePath)
+			if err == nil {
+				log.Info().Str("path", rm.globIgnoreFilePath).Msg("ignore file loaded")
+				return rm
+			}
+		}
+
+		// handle relative path / filename
+		// 2. Find the root of the git repo
+		root, err := FindGitRoot(rm.root)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Error finding .git")
+		}
+
+		// handle full path
+		p := filepath.Join(root, rm.globIgnoreFilePath)
+		if _, err := os.Stat(p); err == nil {
+			// Load the ignore file if it exists
+			rm.globIgnorePatterns, err = goignore.CompileIgnoreFile(p)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error loading ignore file: %v\n", err)
+			}
+			log.Info().Str("path", p).Msg("ignore file loaded")
+			return rm
+		}
+
+		// Panic as the user-provided glob ignore file does not exist
+		log.Fatal().Msgf("ignore file not found: %s", rm.globIgnoreFilePath)
+	}
+
+	// Use default glob ignore file
+	// Load the ignore file if it exists
+	defaultLines := strings.Split(defaultGlobIgnore, "\n")
+	rm.globIgnorePatterns = goignore.CompileIgnoreLines(defaultLines...)
+
+	return rm
+}
+
+// WithLogLevel sets the log level for the RepoMap
+func WithLogLevel(value int) func(*RepoMap) {
+	return func(_ *RepoMap) {
+		zerolog.SetGlobalLevel(zerolog.Level(value))
+		log.Debug().Int("level", value).Msg("RepoMap Log Level Set")
+	}
+}
+
+// WithGlobIgnoreFilePath sets the glob ignore file path. Ignored if DisableGlobIgnore is set
+func WithGlobIgnoreFilePath(value string) func(*RepoMap) {
+	return func(o *RepoMap) {
+		o.globIgnoreFilePath = value
+	}
+}
+
+// DisableGlobIgnore disables the global ignore file
+func DisableGlobIgnore() func(*RepoMap) {
+	return func(o *RepoMap) {
+		o.globIgnoreEnabled = false
+	}
+}
+
+// WithMaxContextWindow set the maximum context window.
+func WithMaxContextWindow(value int) func(*RepoMap) {
+	return func(o *RepoMap) {
+		o.maxMapTokens = value
+	}
+}
+
+// WithMapMulNoFiles sets the number of files to multiply the map by.
+func WithMapMulNoFiles(value int) func(*RepoMap) {
+	return func(o *RepoMap) {
+		o.maxMapTokens = value
+	}
+}
+
+// WithMaxTokens sets the map's maximum number of tokens.
+func WithMaxTokens(value int) func(*RepoMap) {
+	return func(o *RepoMap) {
+		o.maxMapTokens = value
+	}
+}
+
+// WithContentPrefix sets the repository content prefix.
+func WithContentPrefix(value string) func(*RepoMap) {
+	return func(o *RepoMap) {
+		o.contentPrefix = value
+	}
+}
+
+// WithLineNumber enables or disables line numbers in the output.
+func WithLineNumber(value bool) func(*RepoMap) {
+	return func(o *RepoMap) {
+		o.mapShowLineNumber = value
+	}
+}
+
+// WithParentContext enables or disables the inclusion of parent context in the output.
+func WithParentContext(value bool) func(*RepoMap) {
+	return func(o *RepoMap) {
+		o.mapShowParentContext = value
+	}
+}
+
+// WithLinesOfInterestMarked enables or disables the marking of lines of interest in the output.
+func WithLinesOfInterestMarked(value bool) func(*RepoMap) {
+	return func(o *RepoMap) {
+		o.mapMarkLinesOfInterest = value
+	}
+}
+
+// WithLastLineContext enables or disables the inclusion of the context delimited by the last line in the output.
+func WithLastLineContext(value bool) func(*RepoMap) {
+	return func(o *RepoMap) {
+		o.mapShowLastLine = value
+	}
+}
+
+// WithLinesOfInterestPadding sets the number of lines of padding around lines of interest.
+func WithLinesOfInterestPadding(value int) func(*RepoMap) {
+	return func(o *RepoMap) {
+		o.mapLinesOfInterestPadding = value
+	}
+}
+
+// Verbose enables verbose output for debugging.
+func Verbose(value bool) func(*RepoMap) {
+	return func(o *RepoMap) {
+		o.verbose = value
+	}
+}
+
+// TokenCount is a naive token estimator. Real code might call tiktoken or other logic.
+func (m *ModelStub) TokenCount(text string) int {
+	// Very naive: 1 token ~ 4 chars
+	return len(text) / 4
 }
 
 // GetRelFname returns fname relative to r.Root. If that fails, returns fname as-is.
 func (r *RepoMap) GetRelFname(fname string) string {
-	rel, err := filepath.Rel(r.Root, fname)
+	rel, err := filepath.Rel(r.root, fname)
 	if err != nil {
 		return fname
 	}
@@ -120,7 +280,7 @@ func (r *RepoMap) GetRelFname(fname string) string {
 // TokenCount tries to mimic how the Python code estimates tokens (split into short vs. large).
 func (r *RepoMap) TokenCount(text string) float64 {
 	if len(text) < 200 {
-		return float64(r.MainModel.TokenCount(text))
+		return float64(r.mainModel.TokenCount(text))
 	}
 
 	lines := strings.SplitAfter(text, "\n")
@@ -134,7 +294,7 @@ func (r *RepoMap) TokenCount(text string) float64 {
 		sb.WriteString(lines[i])
 	}
 	sampleText := sb.String()
-	sampleTokens := float64(r.MainModel.TokenCount(sampleText))
+	sampleTokens := float64(r.mainModel.TokenCount(sampleText))
 	ratio := sampleTokens / float64(len(sampleText))
 	return ratio * float64(len(text))
 }
@@ -182,7 +342,8 @@ func (r *RepoMap) LoadQuery(lang *sitter.Language, langID string) (*sitter.Query
 	return q, nil
 }
 
-func ReadSourceCode(fname string) ([]byte, error) {
+// readSourceCode reads the source code from a file.
+func readSourceCode(fname string) ([]byte, error) {
 	sourceCode, err := os.ReadFile(fname)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file (%s): %w", fname, err)
@@ -193,6 +354,7 @@ func ReadSourceCode(fname string) ([]byte, error) {
 	return sourceCode, nil
 }
 
+// TagFilter is a function that accepts the name of a capture and returns false if it should be skipped.
 type TagFilter func(name string) bool
 
 // GetTagsFromQueryCapture extracts tags from the result
@@ -283,7 +445,7 @@ func (r *RepoMap) GetTagsRaw(fname, relFname string, filter TagFilter) ([]Tag, e
 	}
 
 	// 2) Read source code
-	sourceCode, err := ReadSourceCode(fname)
+	sourceCode, err := readSourceCode(fname)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file (%s): %v", fname, err)
 	}
@@ -322,6 +484,7 @@ func (r *RepoMap) getTagsFromFiles(allFnames []string, ignoreWords map[string]st
 	var allTags []Tag
 
 	for _, fname := range allFnames {
+		log.Trace().Str("file", fname).Msg("tags")
 		// Get the relative file name
 		rel := r.GetRelFname(fname)
 
@@ -374,7 +537,7 @@ func (r *RepoMap) getRankedTagsByPageRank(allTags []Tag, mentionedFnames, mentio
 	//--------------------------------------------------------
 	defines, references, definitions, identifiers := r.buildReferenceMaps(allTags)
 
-	if r.Verbose {
+	if r.verbose {
 		// ndelorme
 		fmt.Printf("\n\n## defines:")
 		for k, v := range defines {
@@ -422,15 +585,12 @@ func (r *RepoMap) getRankedTagsByPageRank(allTags []Tag, mentionedFnames, mentio
 	// your own. For now, we do unpersonalized for demonstration.)
 	pr := network.PageRank(g, 0.85, 1e-6) // no direct personalization used
 
-	// fmt.Println("PageRank results:")
-	// PrintStructOut(pr)
-
 	//--------------------------------------------------------
 	// 3) Distribute each file’s rank across its out-edges
 	//--------------------------------------------------------
 	edgeRanks := distributeRank(pr, defines, references, nodeByFile, mentionedIdents)
 
-	if r.Verbose {
+	if r.verbose {
 		fmt.Printf("\n\n## Ranked defs:")
 		for edge, rank := range edgeRanks {
 			fmt.Printf("\n- %v / %s / %s", rank, edge.dst, edge.symbol)
@@ -461,7 +621,7 @@ func (r *RepoMap) getRankedTagsByPageRank(allTags []Tag, mentionedFnames, mentio
 			chatRelFnames[rel] = true
 		}
 	*/
-	if r.Verbose {
+	if r.verbose {
 		fmt.Printf("\n\n## Ranked defs (SORTED):")
 		for _, v := range defRankSlice {
 			fmt.Printf("\n- %v / %s / %s", v.rank, v.fname, v.symbol)
@@ -494,11 +654,13 @@ type edgeData struct {
 	weight  float64
 }
 
+// EdgeRank is a struct to hold the edge data for distributing rank
 type EdgeRank struct {
 	dst    string
 	symbol string
 }
 
+// DefRank is a struct to hold the rank for a definition
 type DefRank struct {
 	fname  string
 	symbol string
@@ -621,12 +783,12 @@ func (r *RepoMap) buildFileGraph(
 		nodeByFile[f] = n
 	}
 
-	if r.Verbose {
+	if r.verbose {
 		fmt.Printf("\n\nNumber of nodes (files): %d\n", g.Nodes().Len())
 	}
 
 	// 3) For each ident, link referencing file -> defining file with weight
-	for ident, _ := range identifiers {
+	for ident := range identifiers {
 		defFiles := defines[ident]
 		if len(defFiles) == 0 {
 			continue
@@ -738,7 +900,6 @@ func (r *RepoMap) GetRankedTagsMap(
 	chatFnames, otherFnames []string,
 	maxMapTokens int,
 	mentionedFnames, mentionedIdents map[string]bool,
-	forceRefresh bool,
 ) string {
 
 	startTime := time.Now()
@@ -802,37 +963,20 @@ func (r *RepoMap) GetRankedTagsMap(
 	// }
 
 	endTime := time.Now()
-	r.MapProcessingTime = endTime.Sub(startTime).Seconds()
+	r.totalProcessingTime = endTime.Sub(startTime).Seconds()
 
-	r.LastMap = bestTree
+	r.lastMap = bestTree
 	return bestTree
 }
 
-// tr@ck -- improve this chat vs other files. We should have repoFiles and chatFiles
-
-type RepoMapOptions struct {
-	Color                    bool
-	Verbose                  bool
-	ShowLineNumber           bool
-	ShowParentContext        bool
-	ShowChildContext         bool
-	ShowLastLine             bool
-	MarginPadding            int
-	MarkLinesOfInterest      bool
-	HeaderMax                int
-	ShowTopOfFileParentScope bool
-	LinesOfInterestPadding   int
-}
-
-// GenerateRepoMap is the top-level function (mirroring the Python method) that produces the “repo content”.
-func (r *RepoMap) GenerateRepoMap(
+// Generate is the top-level function (mirroring the Python method) that produces the “repo content”.
+func (r *RepoMap) Generate(
 	chatFiles, otherFiles []string,
 	mentionedFnames, mentionedIdents map[string]bool,
-	forceRefresh bool,
 ) string {
 
-	if r.MaxMapTokens <= 0 {
-		log.Warn().Msgf("Repo-map disabled by max_map_tokens: %d", r.MaxMapTokens)
+	if r.maxMapTokens <= 0 {
+		log.Warn().Msgf("Repo-map disabled by max_map_tokens: %d", r.maxMapTokens)
 		return ""
 	}
 	// if len(otherFiles) == 0 {
@@ -846,12 +990,12 @@ func (r *RepoMap) GenerateRepoMap(
 		mentionedIdents = make(map[string]bool)
 	}
 
-	maxMapTokens := r.MaxMapTokens
+	maxMapTokens := r.maxMapTokens
 	padding := 4096
 	var target int
-	if maxMapTokens > 0 && r.MaxCtxWindow > 0 {
-		t := maxMapTokens * r.MapMulNoFiles
-		t2 := r.MaxCtxWindow - padding
+	if maxMapTokens > 0 && r.maxCtxWindow > 0 {
+		t := maxMapTokens * r.maxCtxFileMultiplier
+		t2 := r.maxCtxWindow - padding
 		if t2 < 0 {
 			t2 = 0
 		}
@@ -861,7 +1005,7 @@ func (r *RepoMap) GenerateRepoMap(
 			target = t2
 		}
 	}
-	if len(chatFiles) == 0 && r.MaxCtxWindow > 0 && target > 0 {
+	if len(chatFiles) == 0 && r.maxCtxWindow > 0 && target > 0 {
 		maxMapTokens = target
 	}
 
@@ -874,12 +1018,12 @@ func (r *RepoMap) GenerateRepoMap(
 	// 	}
 	// }()
 
-	filesListing = r.GetRankedTagsMap(chatFiles, otherFiles, maxMapTokens, mentionedFnames, mentionedIdents, forceRefresh)
+	filesListing = r.GetRankedTagsMap(chatFiles, otherFiles, maxMapTokens, mentionedFnames, mentionedIdents)
 	if filesListing == "" {
 		return ""
 	}
 
-	if r.Verbose {
+	if r.verbose {
 		numTokens := r.TokenCount(filesListing)
 		fmt.Printf("Repo-map: %.1f k-tokens\n", numTokens/1024.0)
 	}
@@ -890,8 +1034,8 @@ func (r *RepoMap) GenerateRepoMap(
 	}
 
 	var repoContent string
-	if r.RepoContentPx != "" {
-		repoContent = strings.ReplaceAll(r.RepoContentPx, "{other}", other)
+	if r.contentPrefix != "" {
+		repoContent = strings.ReplaceAll(r.contentPrefix, "{other}", other)
 	}
 
 	repoContent += filesListing
@@ -914,7 +1058,7 @@ func (r *RepoMap) toTree(tags []Tag, chatFnames []string) string {
 
 	// tr@ck - verbose
 	for i, c := range chatFnames {
-		log.Debug().Int("index", i).Str("file", c).Msg("chat files")
+		log.Trace().Int("index", i).Str("file", c).Msg("chat files")
 	}
 
 	//  2) Sort the tags first by FileName in ascending order, and then by Line in ascending order
@@ -945,7 +1089,7 @@ func (r *RepoMap) toTree(tags []Tag, chatFnames []string) string {
 	// 5) Process tags in a streaming fashion, flushing out each file's lines-of-interest
 	//    when we detect a "new file name" or the dummy tag.
 	for i, t := range tags {
-		log.Debug().Int("index", i).Str("file", t.FileName).Int("line", t.Line).Str("tag", t.Name).Msg("tags")
+		log.Trace().Int("index", i).Str("file", t.FileName).Int("line", t.Line).Str("tag", t.Name).Msg("tags")
 
 		relFname := t.FileName
 		// // Skip tags that belong to a “chat” file. (Python: if this_rel_fname in chat_rel_fnames: continue)
@@ -1007,15 +1151,14 @@ func (r *RepoMap) toTree(tags []Tag, chatFnames []string) string {
 
 // renderTree uses a grep-ast TreeContext to produce a nice snippet with lines of interest expanded.
 func (r *RepoMap) renderTree(relFname string, code []byte, linesOfInterest []int) (string, error) {
-	if r.Verbose {
+	if r.verbose {
 		fmt.Printf("\nrender_tree:  %s, %v\n", relFname, linesOfInterest)
 	}
 
 	// Build a grep-ast TreeContext.
-	// (Below is an example usage; adapt to whatever the actual library API provides.)
 	tc, err := grepast.NewTreeContext(
 		relFname, code,
-		grepast.WithColor(false), // todo
+		grepast.WithColor(false),
 		grepast.WithChildContext(false),
 		grepast.WithLastLineContext(false),
 		grepast.WithTopMargin(0),
@@ -1081,33 +1224,141 @@ func hsvToRGB(h, s, v float64) (int, int, int) {
 	return int(r * 255), int(g * 255), int(b * 255)
 }
 
-// GetRepoFiles gathers all files in a directory (or the file itself).
-func GetRepoFiles(path string, gi *goignore.GitIgnore) []string {
+// GetRepoFiles gathers all files in a directory (or a single file) and returns
+// two values: the slice of file paths and a tree-like string representing
+// the folder structure.
+func (r *RepoMap) GetRepoFiles(path string) ([]string, string) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return []string{}
+		// On error, return empty slices (or handle error as desired).
+		return nil, ""
 	}
 
+	// If the path is a single file, we can simply return it. The "tree map" is trivial.
 	if !info.IsDir() {
-		return []string{path}
+		fileName := filepath.Base(path)
+		treeMap := fmt.Sprintf("└── %s\n", fileName)
+		return []string{path}, treeMap
 	}
 
-	var srcFiles []string
-	filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
-		// Skip files that match the ignore patterns
-		if err != nil {
-			return nil
+	// Otherwise, build the tree and collect the file paths from the directory.
+	tree, files := r.buildTree(path, "")
+	return files, tree
+}
+
+// buildTree is a helper function that constructs a tree-like structure for the
+// directory at 'path' and collects all non-ignored file paths recursively.
+// 'prefix' is updated as we go deeper, to produce correct tree branches.
+func (r *RepoMap) buildTree(path, prefix string) (string, []string) {
+	var (
+		treeBuilder strings.Builder
+		filePaths   []string
+	)
+
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		// If there's an error reading the directory, simply return what we have.
+		// You might prefer to log the error or handle it differently.
+		log.Error().Err(err).Str("path", path).Msg("unable to read directory")
+		return "", nil
+	}
+
+	// Filter out ignored entries first so we can accurately set the "last entry" connector.
+	filtered := make([]os.DirEntry, 0, len(entries))
+	for _, entry := range entries {
+		fullPath := filepath.Join(path, entry.Name())
+		// Use RepoMap’s ignore logic to skip undesired paths:
+		if r.globIgnorePatterns.MatchesPath(fullPath) {
+			continue
 		}
-		// Skip files that match the ignore patterns
-		if gi.MatchesPath(p) {
-			return nil
+		filtered = append(filtered, entry)
+	}
+
+	// Traverse each of the filtered entries in this directory.
+	for i, entry := range filtered {
+		connector := "├──"
+		subPrefix := prefix + "│   "
+
+		// Check if we are on the last entry; adjust prefix for child entries accordingly.
+		isLast := i == len(filtered)-1
+		if isLast {
+			connector = "└──"
+			subPrefix = prefix + "    "
 		}
-		if info.IsDir() {
-			return nil
+
+		// Print current node
+		treeBuilder.WriteString(fmt.Sprintf("%s%s %s\n", prefix, connector, entry.Name()))
+		fullPath := filepath.Join(path, entry.Name())
+
+		// If directory, recurse and append the results
+		if entry.IsDir() {
+			subtree, subFiles := r.buildTree(fullPath, subPrefix)
+			treeBuilder.WriteString(subtree)
+			filePaths = append(filePaths, subFiles...)
+		} else {
+			// If a file, add to file paths
+			filePaths = append(filePaths, fullPath)
 		}
-		log.Debug().Str("op", "source files").Str("path", p).Msg("add")
-		srcFiles = append(srcFiles, p)
-		return nil
-	})
-	return srcFiles
+	}
+
+	return treeBuilder.String(), filePaths
+}
+
+// // GetRepoFiles gathers all files in a directory (or the file itself).
+// func (r *RepoMap) GetRepoFiles(path string) []string {
+// 	info, err := os.Stat(path)
+// 	if err != nil {
+// 		return []string{}
+// 	}
+
+// 	if !info.IsDir() {
+// 		return []string{path}
+// 	}
+
+// 	var srcFiles []string
+// 	filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
+// 		// Skip errors
+// 		if err != nil {
+// 			return nil
+// 		}
+// 		// Skip files that match the ignore patterns
+// 		if r.globIgnorePatterns.MatchesPath(p) {
+// 			return nil
+// 		}
+// 		if info.IsDir() {
+// 			return nil
+// 		}
+// 		log.Debug().Str("path", p).Msg("include")
+// 		srcFiles = append(srcFiles, p)
+// 		return nil
+// 	})
+
+// 	return srcFiles
+// }
+
+// FindGitRoot walks upward from the given path until
+// it finds a directory containing a ".git" folder.
+func FindGitRoot(start string) (string, error) {
+	current, err := filepath.Abs(start)
+	if err != nil {
+		return "", fmt.Errorf("could not get absolute path of %q: %w", start, err)
+	}
+
+	for {
+		// Does ".git" exist here?
+		gitPath := filepath.Join(current, ".git")
+		info, err := os.Stat(gitPath)
+		if err == nil && info.IsDir() {
+			// Found .git
+			return current, nil
+		}
+
+		// can't go higher, stop
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+	return "", fmt.Errorf("no .git folder found starting from %q and up", start)
 }

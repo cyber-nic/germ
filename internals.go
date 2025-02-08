@@ -1,21 +1,5 @@
+// Package germ contains the core logic for the germ tool
 package germ
-
-import (
-	"encoding/json"
-	"fmt"
-	"io"
-	"os"
-)
-
-// PrintStruct prints a struct as JSON.
-func PrintStruct(w io.Writer, t interface{}) {
-	j, _ := json.MarshalIndent(t, "", "  ")
-	fmt.Fprintln(w, string(j))
-}
-
-func PrintStructOut(t interface{}) {
-	PrintStruct(os.Stdout, t)
-}
 
 func uniqueElements(slices ...[]string) []string {
 	uniqueMap := make(map[string]struct{})

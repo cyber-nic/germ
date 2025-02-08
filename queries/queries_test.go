@@ -8,7 +8,7 @@ func TestGetSitterQuery(t *testing.T) {
 	tests := []struct {
 		name      string
 		language  SitterLanguage
-		wantQuery string
+		wantQuery []byte
 		wantErr   bool
 	}{
 		{
@@ -26,7 +26,7 @@ func TestGetSitterQuery(t *testing.T) {
 		{
 			name:      "invalid language",
 			language:  "invalid",
-			wantQuery: "",
+			wantQuery: []byte{},
 			wantErr:   true,
 		},
 	}
@@ -38,7 +38,8 @@ func TestGetSitterQuery(t *testing.T) {
 				t.Errorf("GetSitterQuery() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if gotQuery != tt.wantQuery {
+			// compare byte slices
+			if string(gotQuery) != string(tt.wantQuery) {
 				t.Errorf("GetSitterQuery() = %v, want %v", gotQuery, tt.wantQuery)
 			}
 		})

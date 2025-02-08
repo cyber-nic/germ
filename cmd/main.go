@@ -9,35 +9,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/cyber-nic/germ"
-	goignore "github.com/cyber-nic/go-gitignore"
 )
-
-// findGitRoot walks upward from the given path until
-// it finds a directory containing a ".git" folder.
-func findGitRoot(start string) (string, error) {
-	current, err := filepath.Abs(start)
-	if err != nil {
-		return "", fmt.Errorf("could not get absolute path of %q: %w", start, err)
-	}
-
-	for {
-		// Does ".git" exist here?
-		gitPath := filepath.Join(current, ".git")
-		info, err := os.Stat(gitPath)
-		if err == nil && info.IsDir() {
-			// Found .git
-			return current, nil
-		}
-
-		// If we can't go higher, stop
-		parent := filepath.Dir(current)
-		if parent == current {
-			break
-		}
-		current = parent
-	}
-	return "", fmt.Errorf("no .git folder found starting from %q and up", start)
-}
 
 func main() {
 	if len(os.Args) > 2 {
@@ -61,7 +33,7 @@ func main() {
 	}
 
 	// 2. Find the root of the git repo
-	root, err := findGitRoot(absPath)
+	root, err := germ.FindGitRoot(absPath)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Error finding .git")
 	}
@@ -71,21 +43,9 @@ func main() {
 	//    import "github.com/yourname/yourrepo/repomap"
 	//    or if it's in the same module, something like "myproject/repomap"
 	rm := germ.NewRepoMap(
-		1024,              // maxMapTokens
 		root,              // pass the discovered root
 		&germ.ModelStub{}, // or your real model
-		"",                // repoContentPrefix
-		false,             // verbose
-		16000,             // maxContextWindow
-		8,                 // mapMulNoFiles
-		"auto",            // refresh
-		germ.RepoMapOptions{
-			ShowLineNumber:      true,
-			ShowParentContext:   true,
-			ShowLastLine:        false,
-			MarginPadding:       0,
-			MarkLinesOfInterest: false,
-		},
+		germ.WithLogLevel(int(zerolog.DebugLevel)),
 	)
 
 	// 4. Decide which files are "chat files" vs. "other files"
@@ -94,25 +54,12 @@ func main() {
 	//    - If the input is a directory, gather all files from that directory as 'chat files'
 	//    - Then, optionally, gather other files from the entire repo if you want a full map.
 
-	var allFiles []string
 	// var chatFiles []string
 	var otherFiles []string
 
-	// Get the custom ignore file path
-	customIgnoreFilePath := filepath.Join(absPath, ".astignore")
+	allFiles, treeMap := rm.GetRepoFiles(absPath)
 
-	gi := &goignore.GitIgnore{}
-
-	if _, err := os.Stat(customIgnoreFilePath); err == nil {
-		// Load the ignore file if it exists
-		gi, err = goignore.CompileIgnoreFile(customIgnoreFilePath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error loading ignore file: %v\n", err)
-		}
-		log.Info().Str("path", customIgnoreFilePath).Msg("ignore file loaded")
-	}
-
-	allFiles = germ.GetRepoFiles(absPath, gi) // A helper that gathers files (like in your repomap code)
+	fmt.Println(treeMap)
 
 	// chatSet := make(map[string]bool)
 	// for _, cf := range chatFiles {
@@ -137,14 +84,12 @@ func main() {
 	// 5. Generate Repo Map
 	mentionedFnames := map[string]bool{}
 	mentionedIdents := map[string]bool{}
-	forceRefresh := false
 
-	repoMapOutput := rm.GenerateRepoMap(
+	repoMapOutput := rm.Generate(
 		allFiles,
 		otherFiles,
 		mentionedFnames,
 		mentionedIdents,
-		forceRefresh,
 	)
 
 	if repoMapOutput == "" {

@@ -12,17 +12,7 @@ import (
 
 // TestNewRepoMap tests the NewRepoMap function.
 func TestNewRepoMap(t *testing.T) {
-	rm := NewRepoMap(
-		1024,
-		".",
-		&ModelStub{},
-		"",
-		false,
-		16000,
-		8,
-		"auto",
-		RepoMapOptions{},
-	)
+	rm := NewRepoMap(".", &ModelStub{})
 	if rm == nil {
 		t.Fatalf("Expected NewRepoMap to return a non-nil RepoMap")
 	}
@@ -78,7 +68,7 @@ func TestGetRelFname(t *testing.T) {
 	// Run test cases
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			repo := RepoMap{Root: tt.root}
+			repo := RepoMap{root: tt.root}
 			result := repo.GetRelFname(tt.fname)
 
 			if result != tt.expected {
@@ -344,17 +334,7 @@ func Demo() {
 }
 `)
 
-	rm := NewRepoMap(
-		1024,
-		".",
-		nil, // e.g., &ModelStub{}, or whatever your code expects
-		"",
-		false,
-		16000,
-		8,
-		"auto",
-		RepoMapOptions{},
-	)
+	rm := NewRepoMap(".", nil)
 
 	// If we want to see lines 2 and 3:
 	//   line 2 => "func Demo() {"
